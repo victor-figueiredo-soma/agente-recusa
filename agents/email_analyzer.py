@@ -16,25 +16,53 @@ transportadora tentou entregar caixas de produtos (identificadas por Nota Fiscal
 multimarca, mas a entrega não foi concluída. Essas comunicações chegam como email direto de
 transportadoras ou como mensagens internas de equipe (Teams, WhatsApp, etc.) relatando recusas.
 
-O não-recebimento (chamado internamente de "recusa") ocorre por motivos como:
-- Pedido cancelado pelo destinatário (ex: código "311-PEDIDO CANCELADO")
-- Destinatário recusou por desconto comercial ou divergência de pedido
-- Estabelecimento fechado no momento da entrega
-- Prazo de entrega expirado
-- Endereço não encontrado ou destinatário ausente
-- Devolução automática por ausência de instrução
+=== TRANSPORTADORA: BRASPRESS ===
+Estrutura característica:
+- Cabeçalho: "BRASPRESS TRANSPORTES URGENTES LTDA" seguido de endereço
+- Título: "COMUNICAÇÃO DE PENDÊNCIAS"
+- Frase-chave: "Vimos, pela presente, notificá-los, que a(s) mercadoria(s) a nós confiada(s)
+  para transporte, através da(s) Notas(s) Fiscal(is): [NF], acobertada(s) pelo conhecimento
+  Numero(AWB) : [AWB] emitido em [DATA] ([FILIAL]), destinatário [DESTINATÁRIO],
+  encontra(m)-se pendente(s), motivado(s) pela seguinte ocorrência : [CÓDIGO-DESCRIÇÃO]"
+- NF: logo após "Notas(s) Fiscal(is):" — pode conter barra (ex: "1528101/72")
+- Ocorrência: código numérico seguido de descrição (ex: "311-PEDIDO CANCELADO")
+- Contato: domínio @braspress.com.br
+- Alerta: sempre menciona devolução automática e cobrança de frete (50% rodoviário, 30% rodoaéreo)
 
-PADRÕES COMUNS DE TRANSPORTADORAS:
-- "mercadoria(s) a nós confiada(s) para transporte"
-- "encontra(m)-se pendente(s), motivado(s) pela seguinte ocorrência"
-- "consideraremos como DEVOLUÇÃO AUTOMÁTICA"
-- Códigos de ocorrência no formato "NNN-DESCRIÇÃO" (ex: "311-PEDIDO CANCELADO")
-- Referências por NF, CTE ou AWB
+=== TRANSPORTADORA: MOVVI ===
+Estrutura característica:
+- Frase-chave: "A mercadoria a nós confiada para transporte, através do CTE [CTE], NF [NF]
+  emitido em [DATA] tendo como destinatário [DESTINATÁRIO] encontra-se pendente de entrega
+  em razão da seguinte ocorrência:"
+- Ocorrência: linha seguinte em caixa alta (ex: "ESTABELECIMENTO FECHADO")
+- NF: após "NF " na frase-chave
+- Contato: domínio @movvi.com.br
+- Alerta: menciona devolução automática e cobrança de 100% do frete
+
+=== OUTROS PADRÕES ===
+- Mensagens internas de equipe (Teams/WhatsApp) relatando recusas: "NF XXXXXX foi recusada"
+- Motivos comuns: pedido cancelado, estabelecimento fechado, desconto comercial, prazo expirado,
+  endereço não encontrado, destinatário ausente
+
+=== SINAIS PRIMÁRIOS DE IDENTIFICAÇÃO ===
+Assunto do email: sempre conterá variações de "Comunicado de Pendência", como:
+- "COMUNICAÇÃO DE PENDÊNCIAS"
+- "Comunicado de Pendência"
+- "Pendência de Entrega"
+- "Aviso de Pendência"
+- "Notificação de Pendência"
+Se o assunto contiver qualquer dessas expressões, trate como forte indicador de is_recusa = true.
+
+Remetente: o domínio do email identifica a transportadora:
+- @braspress.com.br → Braspress
+- @movvi.com.br → Movvi
+- Outros domínios de transportadoras também são válidos
 
 TAREFA:
-Determine se a comunicação é uma notificação de não-entrega. Extraia o(s) número(s) de Nota
-Fiscal e o motivo. Se houver múltiplas NFs, retorne todas separadas por vírgula.
-Normalize códigos de ocorrência para linguagem clara (ex: "311-PEDIDO CANCELADO" → "Pedido cancelado").
+Analise o assunto e o remetente primeiro como sinais primários, depois confirme no corpo.
+Extraia o(s) número(s) de Nota Fiscal e o motivo. Se houver múltiplas NFs, retorne todas
+separadas por vírgula. Normalize códigos de ocorrência para linguagem clara
+(ex: "311-PEDIDO CANCELADO" → "Pedido cancelado").
 
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
 {
