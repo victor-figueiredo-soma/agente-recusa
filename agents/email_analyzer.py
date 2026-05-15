@@ -118,6 +118,7 @@ def analyze_email(payload: EmailPayload) -> AnalysisResult:
     )
 
     logger.info(f"Analisando email: '{payload.subject}' de {payload.from_email}")
+    logger.info(f"Conteúdo enviado ao Gemini:\n{user_message[:1000]}")
 
     response = client.models.generate_content(
         model=model_name,
