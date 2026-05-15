@@ -1,9 +1,18 @@
 import os
+import re
+import html
 import json
 from google import genai
 from google.genai import types
 from models.schemas import EmailPayload, AnalysisResult
 from utils.logger import get_logger
+
+
+def _strip_html(text: str) -> str:
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 logger = get_logger(__name__)
 
@@ -105,7 +114,7 @@ def analyze_email(payload: EmailPayload) -> AnalysisResult:
         f"Assunto: {payload.subject}\n"
         f"Remetente: {payload.fromName or ''} <{payload.from_email}>\n"
         f"Data: {payload.receivedDateTime}\n\n"
-        f"Corpo:\n{payload.body}"
+        f"Corpo:\n{_strip_html(payload.body)}"
     )
 
     logger.info(f"Analisando email: '{payload.subject}' de {payload.from_email}")
