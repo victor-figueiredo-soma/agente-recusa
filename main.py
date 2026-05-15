@@ -51,10 +51,10 @@ async def email_webhook(
         "is_recusa": analysis.is_recusa,
         "confianca": analysis.confianca,
         "gravado_sheets": False,
-        "tipo_interacao": None,
-        "reply_to": None,
-        "reply_subject": None,
-        "reply_body": None,
+        "tipo_interacao": "",
+        "reply_to": "",
+        "reply_subject": "",
+        "reply_body": "",
     }
 
     if analysis.is_recusa:
