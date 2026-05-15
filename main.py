@@ -1,36 +1,48 @@
 import os
-import azure.functions as func
 import json
+from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.responses import JSONResponse
 
 from models.schemas import EmailPayload, ProcessedEmail
 from agents.email_analyzer import analyze_email
 from agents.sheet_writer import write_to_sheet
 from utils.logger import get_logger
 
-app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
+app = FastAPI()
 logger = get_logger(__name__)
 
+_WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
-@app.route(route="email_webhook", methods=["POST"])
-def email_webhook(req: func.HttpRequest) -> func.HttpResponse:
-    logger.info("Webhook recebido do Power Automate")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/email_webhook")
+async def email_webhook(
+    request: Request,
+    x_webhook_secret: str | None = Header(default=None),
+):
+    if _WEBHOOK_SECRET and x_webhook_secret != _WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        body = req.get_json()
-    except ValueError:
-        return func.HttpResponse("Payload JSON inválido", status_code=400)
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload JSON inválido")
 
     try:
         payload = EmailPayload(**body)
     except Exception as e:
         logger.error(f"Payload inválido: {e}")
-        return func.HttpResponse(f"Payload inválido: {e}", status_code=422)
+        raise HTTPException(status_code=422, detail=str(e))
 
     try:
         analysis = analyze_email(payload)
     except Exception as e:
         logger.error(f"Erro na análise Gemini: {e}")
-        return func.HttpResponse("Erro na análise do email", status_code=500)
+        raise HTTPException(status_code=500, detail="Erro na análise do email")
 
     logger.info(f"is_recusa={analysis.is_recusa}, confianca={analysis.confianca}")
 
@@ -39,6 +51,7 @@ def email_webhook(req: func.HttpRequest) -> func.HttpResponse:
         "is_recusa": analysis.is_recusa,
         "confianca": analysis.confianca,
         "gravado_sheets": False,
+        "tipo_interacao": None,
         "reply_to": None,
         "reply_subject": None,
         "reply_body": None,
@@ -62,7 +75,7 @@ def email_webhook(req: func.HttpRequest) -> func.HttpResponse:
             result["tipo_interacao"] = tipo_interacao
         except Exception as e:
             logger.error(f"Erro ao gravar no Sheets: {e}")
-            return func.HttpResponse("Erro ao gravar no Sheets", status_code=500)
+            raise HTTPException(status_code=500, detail="Erro ao gravar no Sheets")
 
         if tipo_interacao == "primeira":
             notification_email = os.environ.get("NOTIFICATION_EMAIL")
@@ -70,7 +83,7 @@ def email_webhook(req: func.HttpRequest) -> func.HttpResponse:
                 logger.warning("NOTIFICATION_EMAIL não configurada — auto-reply ignorado")
             else:
                 nf = analysis.nota_fiscal or "não identificada"
-                result["reply_to"] = notification_email  # guardrail: somente o email configurado
+                result["reply_to"] = notification_email
                 result["reply_subject"] = f"[Chamado Criado] Recusa NF {nf} — {payload.subject}"
                 result["reply_body"] = (
                     f"<p>Novo chamado de recusa registrado.</p>"
@@ -85,8 +98,4 @@ def email_webhook(req: func.HttpRequest) -> func.HttpResponse:
                     f"<p>Acesse o Sheets para visualizar o registro completo.</p>"
                 )
 
-    return func.HttpResponse(
-        json.dumps(result),
-        mimetype="application/json",
-        status_code=200,
-    )
+    return JSONResponse(content=result)
