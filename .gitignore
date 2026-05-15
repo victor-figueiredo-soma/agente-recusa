@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.python_packages/
+.venv/
+local.settings.json
+deploy.zip
+pip-tmp/
+pip-cache/
+test_local.py
