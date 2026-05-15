@@ -65,6 +65,7 @@ async def email_webhook(
             conversation_id=payload.conversationId,
             data_hora_recebimento=payload.receivedDateTime,
             remetente=remetente,
+            transportadora=analysis.transportadora,
             assunto=payload.subject,
             nota_fiscal=analysis.nota_fiscal,
             motivo_recusa=analysis.motivo_recusa,

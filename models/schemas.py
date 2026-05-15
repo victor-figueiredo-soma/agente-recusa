@@ -16,6 +16,7 @@ class EmailPayload(BaseModel):
 
 class AnalysisResult(BaseModel):
     is_recusa: bool
+    transportadora: Optional[str] = None
     motivo_recusa: Optional[str] = None
     nota_fiscal: Optional[str] = None
     confianca: Optional[str] = None
@@ -26,6 +27,7 @@ class ProcessedEmail(BaseModel):
     conversation_id: str
     data_hora_recebimento: str
     remetente: str
+    transportadora: Optional[str] = None
     assunto: str
     nota_fiscal: Optional[str] = None
     motivo_recusa: Optional[str] = None

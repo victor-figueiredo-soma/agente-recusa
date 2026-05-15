@@ -60,14 +60,21 @@ Remetente: o domínio do email identifica a transportadora:
 
 TAREFA:
 Analise o assunto e o remetente primeiro como sinais primários, depois confirme no corpo.
-Extraia o(s) número(s) de Nota Fiscal e o motivo. Se houver múltiplas NFs, retorne todas
-separadas por vírgula. Normalize códigos de ocorrência para linguagem clara
-(ex: "311-PEDIDO CANCELADO" → "Pedido cancelado").
+
+Regras de extração:
+- TRANSPORTADORA: identifique pelo nome mencionado no corpo do email (ex: "BRASPRESS", "MOVVI").
+  Retorne apenas o nome normalizado (ex: "Braspress", "Movvi").
+- NOTA FISCAL: extraia os 7 primeiros dígitos numéricos do número da NF, ignorando sub-séries
+  como "/72" ou qualquer sufixo após o 7º dígito. Se houver múltiplas NFs, retorne todas
+  separadas por vírgula (ex: "1528101, 1527451").
+- MOTIVO: normalize códigos de ocorrência para linguagem clara
+  (ex: "311-PEDIDO CANCELADO" → "Pedido cancelado").
 
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
 {
   "is_recusa": <true se for notificação de não-entrega, false caso contrário>,
-  "nota_fiscal": "<número(s) da NF mencionado(s), separados por vírgula se houver mais de um, ou null se não identificado>",
+  "transportadora": "<nome da transportadora identificado no corpo, ou null se não identificado>",
+  "nota_fiscal": "<7 primeiros dígitos da(s) NF(s), separados por vírgula se houver mais de uma, ou null se não identificado>",
   "motivo_recusa": "<motivo da não-entrega em linguagem clara e objetiva, ou null se não for recusa>",
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>"
 }
@@ -91,7 +98,7 @@ def analyze_email(payload: EmailPayload) -> AnalysisResult:
     if not api_key:
         raise ValueError("GEMINI_API_KEY não configurada")
 
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     client = genai.Client(api_key=api_key)
 
     user_message = (

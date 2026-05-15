@@ -1,10 +1,21 @@
 import os
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 from models.schemas import ProcessedEmail
 from utils.logger import get_logger
+
+_SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _to_sp_time(dt_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.astimezone(_SP_TZ).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return dt_str
 
 logger = get_logger(__name__)
 
@@ -18,6 +29,7 @@ _HEADERS = [
     "Id da Conversa",
     "Data/Hora Recebimento",
     "Remetente",
+    "Transportadora",
     "Assunto",
     "Nota Fiscal",
     "Motivo da Recusa",
@@ -41,7 +53,7 @@ def _ensure_headers(worksheet: gspread.Worksheet) -> None:
     existing = worksheet.row_values(1)
     if existing != _HEADERS:
         worksheet.update("A1", [_HEADERS])
-        worksheet.format("A1:J1", {
+        worksheet.format("A1:K1", {
             "textFormat": {"bold": True},
             "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.6},
         })
@@ -92,8 +104,9 @@ def write_to_sheet(record: ProcessedEmail) -> str:
     row = [
         record.message_id,
         record.conversation_id,
-        record.data_hora_recebimento,
+        _to_sp_time(record.data_hora_recebimento),
         record.remetente,
+        record.transportadora or "",
         record.assunto,
         record.nota_fiscal or "",
         record.motivo_recusa or "",
