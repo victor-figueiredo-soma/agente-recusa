@@ -52,6 +52,7 @@ async def email_webhook(
         "confianca": analysis.confianca,
         "gravado_sheets": False,
         "tipo_interacao": "",
+        "send_reply": False,
         "reply_to": "",
         "reply_subject": "",
         "reply_body": "",
@@ -83,6 +84,7 @@ async def email_webhook(
                 logger.warning("NOTIFICATION_EMAIL não configurada — auto-reply ignorado")
             else:
                 nf = analysis.nota_fiscal or "não identificada"
+                result["send_reply"] = True
                 result["reply_to"] = notification_email
                 result["reply_subject"] = f"[Chamado Criado] Recusa NF {nf} — {payload.subject}"
                 result["reply_body"] = (
