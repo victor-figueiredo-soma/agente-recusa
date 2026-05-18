@@ -101,12 +101,16 @@ def write_to_sheet(record: ProcessedEmail) -> str:
     tipo_interacao = _check_interaction_type(worksheet, record.nota_fiscal, record.conversation_id)
     record.tipo_interacao = tipo_interacao
 
+    if tipo_interacao != "primeira":
+        logger.info(f"Reinteração ignorada (não gravada): '{record.assunto}' — {tipo_interacao}")
+        return tipo_interacao
+
     row = [
         record.message_id,
         record.conversation_id,
         _to_sp_time(record.data_hora_recebimento),
         record.remetente,
-        record.transportadora or "",
+        (record.transportadora or "").upper(),
         record.assunto,
         record.nota_fiscal or "",
         record.motivo_recusa or "",

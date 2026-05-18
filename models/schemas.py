@@ -20,6 +20,7 @@ class AnalysisResult(BaseModel):
     motivo_recusa: Optional[str] = None
     nota_fiscal: Optional[str] = None
     confianca: Optional[str] = None
+    tipo_mensagem: Optional[str] = None
 
 
 class ProcessedEmail(BaseModel):
@@ -28,6 +29,7 @@ class ProcessedEmail(BaseModel):
     data_hora_recebimento: str
     remetente: str
     transportadora: Optional[str] = None
+    tipo_mensagem: Optional[str] = None
     assunto: str
     nota_fiscal: Optional[str] = None
     motivo_recusa: Optional[str] = None

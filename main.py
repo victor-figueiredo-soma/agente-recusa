@@ -66,6 +66,7 @@ async def email_webhook(
             data_hora_recebimento=payload.receivedDateTime,
             remetente=remetente,
             transportadora=analysis.transportadora,
+            tipo_mensagem=analysis.tipo_mensagem,
             assunto=payload.subject,
             nota_fiscal=analysis.nota_fiscal,
             motivo_recusa=analysis.motivo_recusa,
@@ -73,7 +74,7 @@ async def email_webhook(
         )
         try:
             tipo_interacao = write_to_sheet(record)
-            result["gravado_sheets"] = True
+            result["gravado_sheets"] = (tipo_interacao == "primeira")
             result["tipo_interacao"] = tipo_interacao
         except Exception as e:
             logger.error(f"Erro ao gravar no Sheets: {e}")
