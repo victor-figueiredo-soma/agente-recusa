@@ -54,6 +54,8 @@ def create_subscription(notification_url: str) -> str:
         headers=_headers(),
         timeout=15,
     )
+    if not resp.ok:
+        logger.error(f"Graph API erro {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     sub_id = resp.json()["id"]
     logger.info(f"Subscription criada: {sub_id}")

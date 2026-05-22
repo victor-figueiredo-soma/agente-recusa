@@ -37,23 +37,33 @@ async def _renewal_loop() -> None:
                     logger.error(f"Falha ao recriar subscription: {e2}")
 
 
+async def _create_subscription_deferred() -> None:
+    """Aguarda o servidor estar pronto antes de registrar a subscription no Graph API.
+    O Graph valida a notificationUrl durante o POST /subscriptions — se o servidor
+    ainda não estiver aceitando requisições, a validação falha com 400."""
+    global _subscription_id
+    await asyncio.sleep(5)
+    base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+    if not base_url:
+        logger.warning("WEBHOOK_BASE_URL não configurada — subscription não registrada")
+        return
+    try:
+        _subscription_id = graph_client.create_subscription(f"{base_url}/graph-webhook")
+    except Exception as e:
+        logger.error(f"Falha ao criar subscription no Graph API: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _subscription_id
-    base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
-    if base_url:
-        try:
-            _subscription_id = graph_client.create_subscription(f"{base_url}/graph-webhook")
-        except Exception as e:
-            logger.error(f"Falha ao criar subscription no Graph API: {e}")
-    else:
-        logger.warning("WEBHOOK_BASE_URL não configurada — subscription não registrada")
-
-    task = asyncio.create_task(_renewal_loop())
+    startup_task = asyncio.create_task(_create_subscription_deferred())
+    renewal_task = asyncio.create_task(_renewal_loop())
     yield
-    task.cancel()
+    startup_task.cancel()
+    renewal_task.cancel()
     with suppress(asyncio.CancelledError):
-        await task
+        await startup_task
+    with suppress(asyncio.CancelledError):
+        await renewal_task
 
 
 app = FastAPI(lifespan=lifespan)
