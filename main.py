@@ -1,5 +1,6 @@
 import asyncio
 import os
+import requests
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -50,6 +51,38 @@ async def _create_subscription_deferred() -> None:
     if not base_url:
         logger.warning("WEBHOOK_BASE_URL não configurada — subscription não registrada")
         return
+# ---- BLOCO DE TESTE DE DIAGNÓSTICO CORRIGIDO ----
+    try:
+        user_id = os.environ.get("MAILBOX_USER_ID")
+        logger.info(f"[DIAGNOSTICO] Iniciando testes para: {user_id}")
+        
+        # Puxa os headers de autenticação direto da sua instância do graph_client
+        # (Se a sua instância no main.py se chamar de outro jeito, mude o nome aqui)
+        headers = graph_client._headers() 
+        
+        # Teste 1: Dados Básicos
+        t1 = await asyncio.to_thread(
+            requests.get, 
+            f"https://graph.microsoft.com/v1.0/users/{user_id}", 
+            headers=headers, 
+            timeout=5
+        )
+        logger.info(f"[DIAGNOSTICO] Teste 1 (Dados do Usuário): Status {t1.status_code}")
+        
+        # Teste 2: Pastas de E-mail
+        t2 = await asyncio.to_thread(
+            requests.get, 
+            f"https://graph.microsoft.com/v1.0/users/{user_id}/mailFolders", 
+            headers=headers, 
+            timeout=5
+        )
+        logger.info(f"[DIAGNOSTICO] Teste 2 (Acesso a Mailboxes): Status {t2.status_code}")
+        if t2.status_code != 200:
+            logger.info(f"[DIAGNOSTICO] Detalhe do erro 2: {t2.text}")
+            
+    except Exception as diag_err:
+        logger.error(f"[DIAGNOSTICO] Erro de execução do script de teste: {diag_err}")
+    # --------------------------------------------------
         
     try:
         # --- AQUI ESTÁ A MUDANÇA CRUCIAL ---
