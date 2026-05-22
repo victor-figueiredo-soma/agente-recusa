@@ -42,13 +42,23 @@ async def _create_subscription_deferred() -> None:
     O Graph valida a notificationUrl durante o POST /subscriptions — se o servidor
     ainda não estiver aceitando requisições, a validação falha com 400."""
     global _subscription_id
-    await asyncio.sleep(5)
+    
+    # Mantemos uma folga segura para o Railway atualizar os IPs de borda
+    await asyncio.sleep(10) 
+    
     base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
     if not base_url:
         logger.warning("WEBHOOK_BASE_URL não configurada — subscription não registrada")
         return
+        
     try:
-        _subscription_id = graph_client.create_subscription(f"{base_url}/graph-webhook")
+        # --- AQUI ESTÁ A MUDANÇA CRUCIAL ---
+        # asyncio.to_thread joga o 'requests.post' síncrono para outra thread.
+        # Isso impede que o loop do FastAPI trave e permite que ele responda 
+        # o 'validationToken' imediatamente no milissegundo em que a Microsoft chamar.
+        _subscription_id = await asyncio.to_thread(
+            graph_client.create_subscription, f"{base_url}/graph-webhook"
+        )
     except Exception as e:
         logger.error(f"Falha ao criar subscription no Graph API: {e}")
 
