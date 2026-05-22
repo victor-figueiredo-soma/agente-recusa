@@ -1,0 +1,108 @@
+import os
+import requests
+import msal
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+_SCOPES = ["https://graph.microsoft.com/.default"]
+
+
+def _get_token() -> str:
+    tenant_id = os.environ["AZURE_TENANT_ID"]
+    client_id = os.environ["AZURE_CLIENT_ID"]
+    client_secret = os.environ["AZURE_CLIENT_SECRET"]
+
+    app = msal.ConfidentialClientApplication(
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        client_credential=client_secret,
+    )
+    result = app.acquire_token_for_client(scopes=_SCOPES)
+    if "access_token" not in result:
+        raise RuntimeError(f"MSAL token error: {result.get('error_description', result)}")
+    return result["access_token"]
+
+
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"}
+
+
+def get_message(message_id: str) -> dict:
+    user_id = os.environ["MAILBOX_USER_ID"]
+    select = "id,conversationId,subject,body,from,toRecipients,receivedDateTime"
+    url = f"{_GRAPH_BASE}/users/{user_id}/messages/{message_id}?$select={select}"
+    resp = requests.get(url, headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def create_subscription(notification_url: str) -> str:
+    """Cria ou renova subscription para novos emails na caixa. Retorna subscriptionId."""
+    user_id = os.environ["MAILBOX_USER_ID"]
+    payload = {
+        "changeType": "created",
+        "notificationUrl": notification_url,
+        "resource": f"users/{user_id}/mailFolders/Inbox/messages",
+        "expirationDateTime": _expiration_datetime(),
+        "clientState": os.environ.get("AZURE_CLIENT_ID", "agente-recusa"),
+    }
+    resp = requests.post(
+        f"{_GRAPH_BASE}/subscriptions",
+        json=payload,
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    sub_id = resp.json()["id"]
+    logger.info(f"Subscription criada: {sub_id}")
+    return sub_id
+
+
+def renew_subscription(subscription_id: str) -> None:
+    payload = {"expirationDateTime": _expiration_datetime()}
+    resp = requests.patch(
+        f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
+        json=payload,
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    logger.info(f"Subscription renovada: {subscription_id}")
+
+
+def send_reply(message_id: str, body_html: str) -> None:
+    """Cria reply draft, substitui To: pelo email de notificação e envia."""
+    user_id = os.environ["MAILBOX_USER_ID"]
+    notification_email = os.environ["NOTIFICATION_EMAIL"]
+
+    # 1. Criar draft de reply
+    create_url = f"{_GRAPH_BASE}/users/{user_id}/messages/{message_id}/createReply"
+    resp = requests.post(create_url, headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    draft_id = resp.json()["id"]
+
+    # 2. Substituir destinatário e corpo
+    patch_url = f"{_GRAPH_BASE}/users/{user_id}/messages/{draft_id}"
+    patch_payload = {
+        "toRecipients": [{"emailAddress": {"address": notification_email}}],
+        "ccRecipients": [],
+        "bccRecipients": [],
+        "body": {"contentType": "HTML", "content": body_html},
+    }
+    resp = requests.patch(patch_url, json=patch_payload, headers=_headers(), timeout=15)
+    resp.raise_for_status()
+
+    # 3. Enviar
+    send_url = f"{_GRAPH_BASE}/users/{user_id}/messages/{draft_id}/send"
+    resp = requests.post(send_url, headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    logger.info(f"Reply enviado para {notification_email} (thread de {message_id})")
+
+
+def _expiration_datetime() -> str:
+    from datetime import datetime, timezone, timedelta
+    # Graph API permite máx. ~4230 min para mail subscriptions (~3 dias)
+    expires = datetime.now(timezone.utc) + timedelta(days=2)
+    return expires.strftime("%Y-%m-%dT%H:%M:%S.000Z")

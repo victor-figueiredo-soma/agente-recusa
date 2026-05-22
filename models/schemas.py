@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 
 class EmailPayload(BaseModel):
@@ -36,3 +36,24 @@ class ProcessedEmail(BaseModel):
     confianca: Optional[str] = None
     tipo_interacao: str = "primeira"
     acao: str = "Chamado Recebido"
+
+
+# --- Microsoft Graph Change Notification schemas ---
+
+class GraphResourceData(BaseModel):
+    id: Optional[str] = Field(default=None, alias="id")
+    odata_type: Optional[str] = Field(default=None, alias="@odata.type")
+
+    model_config = {"populate_by_name": True}
+
+
+class GraphNotificationItem(BaseModel):
+    subscriptionId: Optional[str] = None
+    changeType: Optional[str] = None
+    resource: Optional[str] = None
+    resourceData: Optional[GraphResourceData] = None
+    clientState: Optional[str] = None
+
+
+class GraphNotificationPayload(BaseModel):
+    value: List[GraphNotificationItem]
