@@ -75,16 +75,19 @@ def health():
 
 
 @app.get("/graph-webhook")
-async def graph_webhook_validate(validationToken: str | None = None):
-    """Endpoint de validação exigido pelo Graph API ao criar uma subscription."""
+async def graph_webhook_validate_get(validationToken: str | None = None):
     if validationToken:
         return PlainTextResponse(content=validationToken, status_code=200)
     return PlainTextResponse(content="ok", status_code=200)
 
 
 @app.post("/graph-webhook")
-async def graph_webhook(request: Request):
-    """Recebe change notifications do Microsoft Graph e processa novos emails."""
+async def graph_webhook(request: Request, validationToken: str | None = None):
+    """Recebe change notifications do Microsoft Graph.
+    O Graph API envia a validação como POST com validationToken no query string."""
+    if validationToken:
+        return PlainTextResponse(content=validationToken, status_code=200)
+
     try:
         body = await request.json()
     except Exception:
