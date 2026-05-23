@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 _SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 _subscription_id: str | None = None
+_in_flight: set[str] = set()  # message_ids atualmente em processamento
 
 
 def _fmt_sp_time(dt_str: str) -> str:
@@ -162,9 +163,14 @@ async def graph_webhook(request: Request, validationToken: str | None = None):
         if not item.resourceData or not item.resourceData.id:
             logger.warning("Notificação sem resourceData.id — ignorada")
             continue
-        _process_message(item.resourceData.id)
+        msg_id = item.resourceData.id
+        if msg_id in _in_flight:
+            logger.info(f"Mensagem {msg_id} já em processamento — notificação duplicada ignorada")
+            continue
+        _in_flight.add(msg_id)
+        asyncio.create_task(_dispatch_message(msg_id))
 
-    # Graph exige 202 rápido
+    # 202 imediato — Graph resenvia se não receber resposta em ~3s
     return JSONResponse({}, status_code=202)
 
 
@@ -179,6 +185,14 @@ async def renew_subscription():
     except Exception as e:
         logger.error(f"Erro ao renovar subscription: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def _dispatch_message(message_id: str) -> None:
+    """Executa _process_message em thread separada e libera _in_flight ao final."""
+    try:
+        await asyncio.to_thread(_process_message, message_id)
+    finally:
+        _in_flight.discard(message_id)
 
 
 def _process_message(message_id: str) -> None:
