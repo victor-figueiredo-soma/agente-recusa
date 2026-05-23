@@ -62,7 +62,7 @@ def _ensure_headers(worksheet: gspread.Worksheet) -> None:
 def _nf_ja_registrada(worksheet: gspread.Worksheet, nota_fiscal: str | None) -> bool:
     if not nota_fiscal:
         return False
-    return any(r.get("Nota Fiscal") == nota_fiscal for r in worksheet.get_all_records())
+    return any(str(r.get("Nota Fiscal", "")) == nota_fiscal for r in worksheet.get_all_records())
 
 
 def write_to_sheet(record: ProcessedEmail) -> str:
