@@ -59,33 +59,10 @@ def _ensure_headers(worksheet: gspread.Worksheet) -> None:
         })
 
 
-def _check_interaction_type(
-    worksheet: gspread.Worksheet,
-    nota_fiscal: str | None,
-    message_id: str,
-    conversation_id: str,
-) -> str:
-    """
-    Retorna:
-    - "reinteracao_mesma_thread"  → mesma mensagem+NF ou mesma thread+NF já registrada
-    - "reinteracao_nova_thread"   → mesma NF em thread diferente
-    - "primeira"                  → NF e thread nunca vistos antes
-    """
-    records = worksheet.get_all_records()
-    nf_val = nota_fiscal or ""
-
-    for r in records:
-        if r.get("Id da Mensagem") == message_id and r.get("Nota Fiscal") == nf_val:
-            return "reinteracao_mesma_thread"
-        if r.get("Id da Conversa") == conversation_id and r.get("Nota Fiscal") == nf_val:
-            return "reinteracao_mesma_thread"
-
-    if nota_fiscal:
-        for r in records:
-            if r.get("Nota Fiscal") == nota_fiscal:
-                return "reinteracao_nova_thread"
-
-    return "primeira"
+def _nf_ja_registrada(worksheet: gspread.Worksheet, nota_fiscal: str | None) -> bool:
+    if not nota_fiscal:
+        return False
+    return any(r.get("Nota Fiscal") == nota_fiscal for r in worksheet.get_all_records())
 
 
 def write_to_sheet(record: ProcessedEmail) -> str:
@@ -106,12 +83,13 @@ def write_to_sheet(record: ProcessedEmail) -> str:
 
     _ensure_headers(worksheet)
 
-    tipo_interacao = _check_interaction_type(worksheet, record.nota_fiscal, record.message_id, record.conversation_id)
-    record.tipo_interacao = tipo_interacao
+    if _nf_ja_registrada(worksheet, record.nota_fiscal):
+        logger.info(f"NF {record.nota_fiscal} já registrada — ignorada")
+        record.tipo_interacao = "reinteracao"
+        return "reinteracao"
 
-    if tipo_interacao != "primeira":
-        logger.info(f"Reinteração ignorada (não gravada): '{record.assunto}' — {tipo_interacao}")
-        return tipo_interacao
+    tipo_interacao = "primeira"
+    record.tipo_interacao = tipo_interacao
 
     row = [
         record.message_id,

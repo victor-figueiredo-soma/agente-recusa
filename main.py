@@ -274,9 +274,8 @@ def _process_message(message_id: str) -> None:
         nf_label = nf or "não identificada"
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
-        elif tipo_interacao == "reinteracao_nova_thread":
+        elif tipo_interacao == "reinteracao":
             ja_registradas.append(nf_label)
-        # "reinteracao_mesma_thread" → notificação duplicada, ignorada silenciosamente
 
     if not novos_chamados and not ja_registradas:
         return
