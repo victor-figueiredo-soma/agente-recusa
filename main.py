@@ -2,6 +2,8 @@ import asyncio
 import os
 import requests
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -14,7 +16,19 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_SP_TZ = ZoneInfo("America/Sao_Paulo")
+
 _subscription_id: str | None = None
+
+
+def _fmt_sp_time(dt_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.astimezone(_SP_TZ).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return dt_str
+
+
 _RENEWAL_INTERVAL_SECONDS = 48 * 3600  # renova a cada 48h (subscription dura ~3 dias)
 
 
@@ -217,40 +231,81 @@ def _process_message(message_id: str) -> None:
         return
 
     remetente = f"{payload.fromName} <{payload.from_email}>" if payload.fromName else payload.from_email
-    record = ProcessedEmail(
-        message_id=payload.messageId,
-        conversation_id=payload.conversationId,
-        data_hora_recebimento=payload.receivedDateTime,
-        remetente=remetente,
-        transportadora=analysis.transportadora,
-        tipo_mensagem=analysis.tipo_mensagem,
-        assunto=payload.subject,
-        nota_fiscal=analysis.nota_fiscal,
-        motivo_recusa=analysis.motivo_recusa,
-        confianca=analysis.confianca,
-    )
 
-    try:
-        tipo_interacao = write_to_sheet(record)
-    except Exception as e:
-        logger.error(f"Erro ao gravar no Sheets para {message_id}: {e}")
+    nfs_raw = analysis.nota_fiscal or ""
+    nfs = [nf.strip() for nf in nfs_raw.split(",") if nf.strip()] if nfs_raw else [None]
+
+    novos_chamados: list[str] = []
+    ja_registradas: list[str] = []
+
+    for nf in nfs:
+        record = ProcessedEmail(
+            message_id=payload.messageId,
+            conversation_id=payload.conversationId,
+            data_hora_recebimento=payload.receivedDateTime,
+            remetente=remetente,
+            transportadora=analysis.transportadora,
+            tipo_mensagem=analysis.tipo_mensagem,
+            assunto=payload.subject,
+            nota_fiscal=nf,
+            motivo_recusa=analysis.motivo_recusa,
+            confianca=analysis.confianca,
+        )
+        try:
+            tipo_interacao = write_to_sheet(record)
+        except Exception as e:
+            logger.error(f"Erro ao gravar no Sheets para NF {nf} ({message_id}): {e}")
+            continue
+
+        nf_label = nf or "não identificada"
+        if tipo_interacao == "primeira":
+            novos_chamados.append(nf_label)
+        elif tipo_interacao == "reinteracao_nova_thread":
+            ja_registradas.append(nf_label)
+        # "reinteracao_mesma_thread" → notificação duplicada, ignorada silenciosamente
+
+    if not novos_chamados and not ja_registradas:
         return
 
-    if tipo_interacao != "primeira":
-        return
+    transportadora = (analysis.transportadora or "não identificada").upper()
+    motivo = analysis.motivo_recusa or "não identificado"
+    data_sp = _fmt_sp_time(payload.receivedDateTime)
 
-    nf = analysis.nota_fiscal or "não identificada"
+    if novos_chamados and ja_registradas:
+        qtd = len(novos_chamados)
+        header_text = (
+            f"{qtd} chamado(s) de recusa registrado(s). "
+            f"{len(ja_registradas)} NF(s) já possuíam chamado aberto."
+        )
+        novos_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
+        ja_list = "".join(f"<li>NF {nf} — chamado já existente no Sheets</li>" for nf in ja_registradas)
+        nf_items = (
+            f"<li><strong>Novos chamados:</strong><ul>{novos_list}</ul></li>"
+            f"<li><strong>Chamados já existentes:</strong><ul>{ja_list}</ul></li>"
+        )
+    elif novos_chamados:
+        qtd = len(novos_chamados)
+        if qtd == 1:
+            header_text = "Novo chamado de recusa registrado."
+            nf_items = f"<li><strong>Nota Fiscal:</strong> {novos_chamados[0]}</li>"
+        else:
+            header_text = f"{qtd} chamados de recusa registrados."
+            nf_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
+            nf_items = f"<li><strong>Notas Fiscais ({qtd} chamados):</strong><ul>{nf_list}</ul></li>"
+    else:
+        header_text = "Chamado(s) já aberto(s) para a(s) NF(s) informada(s) — nenhum novo registro criado."
+        ja_list = "".join(f"<li>NF {nf} — chamado já existente no Sheets</li>" for nf in ja_registradas)
+        nf_items = f"<li><strong>Notas Fiscais:</strong><ul>{ja_list}</ul></li>"
+
     body_html = (
-        f"<p>Novo chamado de recusa registrado.</p>"
+        f"<p>{header_text}</p>"
         f"<ul>"
-        f"<li><strong>Nota Fiscal:</strong> {nf}</li>"
-        f"<li><strong>Transportadora/Remetente:</strong> {remetente}</li>"
-        f"<li><strong>Assunto:</strong> {payload.subject}</li>"
-        f"<li><strong>Motivo:</strong> {analysis.motivo_recusa or 'não identificado'}</li>"
-        f"<li><strong>Data de recebimento:</strong> {payload.receivedDateTime}</li>"
-        f"<li><strong>Id da Mensagem:</strong> {payload.messageId}</li>"
+        f"{nf_items}"
+        f"<li><strong>Transportadora:</strong> {transportadora}</li>"
+        f"<li><strong>Motivo:</strong> {motivo}</li>"
+        f"<li><strong>Data de recebimento:</strong> {data_sp}</li>"
         f"</ul>"
-        f"<p>Acesse o Sheets para visualizar o registro completo.</p>"
+        f"<p>Acesse o Sheets para visualizar o(s) registro(s).</p>"
     )
 
     try:

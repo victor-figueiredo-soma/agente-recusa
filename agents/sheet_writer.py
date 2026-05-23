@@ -59,17 +59,25 @@ def _ensure_headers(worksheet: gspread.Worksheet) -> None:
         })
 
 
-def _check_interaction_type(worksheet: gspread.Worksheet, nota_fiscal: str | None, conversation_id: str) -> str:
+def _check_interaction_type(
+    worksheet: gspread.Worksheet,
+    nota_fiscal: str | None,
+    message_id: str,
+    conversation_id: str,
+) -> str:
     """
     Retorna:
-    - "reinteracao_mesma_thread"  → mesmo conversationId já registrado
-    - "reinteracao_nova_thread"   → mesma NF, thread diferente
+    - "reinteracao_mesma_thread"  → mesma mensagem+NF ou mesma thread+NF já registrada
+    - "reinteracao_nova_thread"   → mesma NF em thread diferente
     - "primeira"                  → NF e thread nunca vistos antes
     """
     records = worksheet.get_all_records()
+    nf_val = nota_fiscal or ""
 
     for r in records:
-        if r.get("Id da Conversa") == conversation_id:
+        if r.get("Id da Mensagem") == message_id and r.get("Nota Fiscal") == nf_val:
+            return "reinteracao_mesma_thread"
+        if r.get("Id da Conversa") == conversation_id and r.get("Nota Fiscal") == nf_val:
             return "reinteracao_mesma_thread"
 
     if nota_fiscal:
@@ -98,7 +106,7 @@ def write_to_sheet(record: ProcessedEmail) -> str:
 
     _ensure_headers(worksheet)
 
-    tipo_interacao = _check_interaction_type(worksheet, record.nota_fiscal, record.conversation_id)
+    tipo_interacao = _check_interaction_type(worksheet, record.nota_fiscal, record.message_id, record.conversation_id)
     record.tipo_interacao = tipo_interacao
 
     if tipo_interacao != "primeira":
