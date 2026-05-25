@@ -75,6 +75,7 @@ Assunto do email para SOLUÇÃO e COMBOIO:
 Remetente (domínio do email):
 - @braspress.com.br → Braspress
 - @movvi.com.br → Movvi
+- @jadlog.com.br → is_recusa = false SEMPRE. JADLOG nunca envia notificações de recusa para este mailbox.
 - Para Solução e Comboio: identificar pelo nome na assinatura ou corpo do email
 
 TAREFA:
@@ -103,16 +104,22 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
   "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>"
 }
 
-Critérios para is_recusa = true:
-- Transportadora informando falha, pendência ou impossibilidade de entrega
-- Comunicado de devolução automática por não-entrega
-- Notificação de recusa de recebimento pelo destinatário (lojista)
+Critérios para is_recusa = true (TODOS devem ser satisfeitos):
+- Transportadora informando falha, pendência ou impossibilidade de entrega de uma remessa específica
+- O email contém obrigatoriamente um número de Nota Fiscal identificável (7 dígitos)
+- Comunicado de devolução automática por não-entrega, ou notificação de recusa pelo destinatário (lojista)
 - Solicitação de autorização de reentrega após recusa
 
+REGRA OBRIGATÓRIA: Se não for possível identificar uma Nota Fiscal (nota_fiscal = null), então
+is_recusa DEVE ser false. Toda notificação real de não-entrega sempre contém o número da NF.
+
 Critérios para is_recusa = false:
-- Email não relacionado a logística ou entrega
+- Nenhum número de Nota Fiscal identificável no email
+- Email não relacionado a entrega de uma remessa específica
 - Confirmação de entrega bem-sucedida
-- Emails administrativos, financeiros ou comerciais sem relação com entrega
+- Email administrativo, financeiro, de cadastro ou operacional interno (ex: assuntos com "[CADASTROS", "Solicitações", "STATUS de lojas", "mudança de STATUS")
+- Emails de transportadoras sobre assuntos operacionais que não sejam notificação de falha de entrega (ex: relatórios, templates, atualizações de status de loja, comunicados gerais)
+- "Devolutivas" no contexto de cadastro de lojas ou processos comerciais NÃO é recusa de entrega
 - Spam ou automático sem conteúdo de entrega
 """
 
