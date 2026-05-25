@@ -8,18 +8,22 @@ logger = get_logger(__name__)
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _SCOPES = ["https://graph.microsoft.com/.default"]
 
+_msal_app: msal.ConfidentialClientApplication | None = None
+
+
+def _get_msal_app() -> msal.ConfidentialClientApplication:
+    global _msal_app
+    if _msal_app is None:
+        _msal_app = msal.ConfidentialClientApplication(
+            os.environ["AZURE_CLIENT_ID"],
+            authority=f"https://login.microsoftonline.com/{os.environ['AZURE_TENANT_ID']}",
+            client_credential=os.environ["AZURE_CLIENT_SECRET"],
+        )
+    return _msal_app
+
 
 def _get_token() -> str:
-    tenant_id = os.environ["AZURE_TENANT_ID"]
-    client_id = os.environ["AZURE_CLIENT_ID"]
-    client_secret = os.environ["AZURE_CLIENT_SECRET"]
-
-    app = msal.ConfidentialClientApplication(
-        client_id,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
-        client_credential=client_secret,
-    )
-    result = app.acquire_token_for_client(scopes=_SCOPES)
+    result = _get_msal_app().acquire_token_for_client(scopes=_SCOPES)
     if "access_token" not in result:
         raise RuntimeError(f"MSAL token error: {result.get('error_description', result)}")
     return result["access_token"]
@@ -46,7 +50,7 @@ def create_subscription(notification_url: str) -> str:
         "notificationUrl": notification_url,
         "resource": f"users/{user_id}/mailFolders/Inbox/messages",
         "expirationDateTime": _expiration_datetime(),
-        "clientState": os.environ.get("AZURE_CLIENT_ID", "agente-recusa"),
+        "clientState": os.environ["WEBHOOK_CLIENT_STATE"],
     }
     resp = requests.post(
         f"{_GRAPH_BASE}/subscriptions",

@@ -1,11 +1,10 @@
 import asyncio
 import os
-import requests
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from models.schemas import EmailPayload, ProcessedEmail, GraphNotificationPayload
@@ -66,39 +65,7 @@ async def _create_subscription_deferred() -> None:
     if not base_url:
         logger.warning("WEBHOOK_BASE_URL não configurada — subscription não registrada")
         return
-# ---- BLOCO DE TESTE DE DIAGNÓSTICO CORRIGIDO ----
-    try:
-        user_id = os.environ.get("MAILBOX_USER_ID")
-        logger.info(f"[DIAGNOSTICO] Iniciando testes para: {user_id}")
-        
-        # Puxa os headers de autenticação direto da sua instância do graph_client
-        # (Se a sua instância no main.py se chamar de outro jeito, mude o nome aqui)
-        headers = graph_client._headers() 
-        
-        # Teste 1: Dados Básicos
-        t1 = await asyncio.to_thread(
-            requests.get, 
-            f"https://graph.microsoft.com/v1.0/users/{user_id}", 
-            headers=headers, 
-            timeout=5
-        )
-        logger.info(f"[DIAGNOSTICO] Teste 1 (Dados do Usuário): Status {t1.status_code}")
-        
-        # Teste 2: Pastas de E-mail
-        t2 = await asyncio.to_thread(
-            requests.get, 
-            f"https://graph.microsoft.com/v1.0/users/{user_id}/mailFolders", 
-            headers=headers, 
-            timeout=5
-        )
-        logger.info(f"[DIAGNOSTICO] Teste 2 (Acesso a Mailboxes): Status {t2.status_code}")
-        if t2.status_code != 200:
-            logger.info(f"[DIAGNOSTICO] Detalhe do erro 2: {t2.text}")
-            
-    except Exception as diag_err:
-        logger.error(f"[DIAGNOSTICO] Erro de execução do script de teste: {diag_err}")
-    # --------------------------------------------------
-        
+
     try:
         # --- AQUI ESTÁ A MUDANÇA CRUCIAL ---
         # asyncio.to_thread joga o 'requests.post' síncrono para outra thread.
@@ -157,7 +124,12 @@ async def graph_webhook(request: Request, validationToken: str | None = None):
         logger.error(f"Notificação inválida: {e}")
         return JSONResponse({"error": str(e)}, status_code=422)
 
+    expected_state = os.environ.get("WEBHOOK_CLIENT_STATE", "")
+
     for item in notification.value:
+        if item.clientState != expected_state:
+            logger.warning("Notificação com clientState inválido — descartada")
+            continue
         if item.changeType != "created":
             continue
         if not item.resourceData or not item.resourceData.id:
@@ -175,8 +147,11 @@ async def graph_webhook(request: Request, validationToken: str | None = None):
 
 
 @app.post("/subscriptions/renew")
-async def renew_subscription():
+async def renew_subscription(x_api_key: str | None = Header(default=None)):
     """Renova manualmente a subscription antes de expirar (validade máx. ~3 dias)."""
+    expected = os.environ.get("RENEW_API_KEY", "")
+    if not expected or x_api_key != expected:
+        return JSONResponse({"error": "Não autorizado"}, status_code=401)
     if not _subscription_id:
         return JSONResponse({"error": "Nenhuma subscription ativa"}, status_code=404)
     try:

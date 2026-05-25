@@ -1,10 +1,32 @@
-.env
-__pycache__/
-*.pyc
-.python_packages/
-.venv/
+# Credenciais e segredos
 local.settings.json
+.env
+.env.*
+*.env
+secrets.json
+credentials.json
+service_account*.json
+*_credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.Python
+
+# Build / deploy
 deploy.zip
-pip-tmp/
-pip-cache/
-test_local.py
+*.zip
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
