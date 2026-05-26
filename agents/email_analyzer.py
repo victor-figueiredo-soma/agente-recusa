@@ -8,6 +8,15 @@ from models.schemas import EmailPayload, AnalysisResult
 from utils.logger import get_logger
 
 
+def _strip_quoted_html(text: str) -> str:
+    """Remove blocos de conteúdo citado de replies antes de processar o HTML."""
+    # Padrão universal: <blockquote> (Gmail, Outlook, etc.)
+    text = re.sub(r'<blockquote[^>]*>.*?</blockquote>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Outlook Web/Graph API: div com id="divRplyFwdMsg" e o que vem depois
+    text = re.sub(r'<div[^>]*id=["\']divRplyFwdMsg["\'][^>]*>.*', '', text, flags=re.DOTALL | re.IGNORECASE)
+    return text
+
+
 def _strip_html(text: str) -> str:
     text = html.unescape(text)
     text = re.sub(r'<[^>]+>', ' ', text)
@@ -143,7 +152,7 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
         f"Assunto: {payload.subject}\n"
         f"Remetente: {payload.fromName or ''} <{payload.from_email}>\n"
         f"Data: {payload.receivedDateTime}\n\n"
-        f"Corpo:\n{_strip_html(payload.body)}"
+        f"Corpo:\n{_strip_html(_strip_quoted_html(payload.body))}"
     )
 
     if thread_history:
