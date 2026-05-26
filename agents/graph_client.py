@@ -54,9 +54,11 @@ def get_conversation_messages(
         "$orderby": "receivedDateTime desc",
         "$top": str(top + (1 if exclude_id else 0)),
         "$select": "id,subject,body,from,receivedDateTime",
+        "$count": "true",
     }
     url = f"{_GRAPH_BASE}/users/{user_id}/messages"
-    resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+    headers = {**_headers(), "ConsistencyLevel": "eventual"}
+    resp = requests.get(url, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     messages = resp.json().get("value", [])
     if exclude_id:
