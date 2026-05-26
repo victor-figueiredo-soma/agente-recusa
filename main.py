@@ -209,7 +209,16 @@ def _process_message(message_id: str) -> None:
     })
 
     try:
-        analysis = analyze_email(payload)
+        thread_history = graph_client.get_conversation_messages(
+            payload.conversationId, exclude_id=payload.messageId
+        )
+        logger.info(f"Histórico da thread {payload.conversationId}: {len(thread_history)} mensagem(ns) encontrada(s)")
+    except Exception as e:
+        logger.warning(f"Não foi possível buscar histórico da thread {payload.conversationId}: {e}")
+        thread_history = None
+
+    try:
+        analysis = analyze_email(payload, thread_history=thread_history)
     except Exception as e:
         logger.error(f"Erro na análise Gemini para {message_id}: {e}")
         return

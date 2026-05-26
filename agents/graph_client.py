@@ -42,6 +42,28 @@ def get_message(message_id: str) -> dict:
     return resp.json()
 
 
+def get_conversation_messages(
+    conversation_id: str,
+    exclude_id: str | None = None,
+    top: int = 5,
+) -> list[dict]:
+    """Retorna as últimas `top` mensagens da thread, excluindo `exclude_id`."""
+    user_id = os.environ["MAILBOX_USER_ID"]
+    params = {
+        "$filter": f"conversationId eq '{conversation_id}'",
+        "$orderby": "receivedDateTime desc",
+        "$top": str(top + (1 if exclude_id else 0)),
+        "$select": "id,subject,body,from,receivedDateTime",
+    }
+    url = f"{_GRAPH_BASE}/users/{user_id}/messages"
+    resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+    resp.raise_for_status()
+    messages = resp.json().get("value", [])
+    if exclude_id:
+        messages = [m for m in messages if m.get("id") != exclude_id]
+    return messages[:top]
+
+
 def create_subscription(notification_url: str) -> str:
     """Cria ou renova subscription para novos emails na caixa. Retorna subscriptionId."""
     user_id = os.environ["MAILBOX_USER_ID"]

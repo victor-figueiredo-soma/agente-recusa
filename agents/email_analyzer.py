@@ -94,6 +94,13 @@ Regras de extração:
   "padrao_automatico" → emails com estrutura rígida e padronizada enviados automaticamente (Braspress, Movvi)
   "mensagem_livre"    → emails com formato livre ou semi-estruturado, redigidos manualmente (Solução, Comboio)
 
+=== HISTÓRICO DA THREAD ===
+Quando fornecido, o campo "HISTÓRICO DA THREAD" contém as mensagens anteriores da mesma conversa,
+em ordem cronológica decrescente (mais recente primeiro). Use-o para:
+- Entender se este email é uma continuidade de uma notificação já enviada pela transportadora
+- Identificar se já houve resposta do time de logística na thread
+- Classificar com maior precisão se trata-se de um novo comunicado de recusa ou apenas uma reinteração
+
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
 {
   "is_recusa": <true se for notificação de não-entrega, false caso contrário>,
@@ -124,7 +131,7 @@ Critérios para is_recusa = false:
 """
 
 
-def analyze_email(payload: EmailPayload) -> AnalysisResult:
+def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = None) -> AnalysisResult:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY não configurada")
@@ -138,6 +145,19 @@ def analyze_email(payload: EmailPayload) -> AnalysisResult:
         f"Data: {payload.receivedDateTime}\n\n"
         f"Corpo:\n{_strip_html(payload.body)}"
     )
+
+    if thread_history:
+        lines = ["\n\n=== HISTÓRICO DA THREAD (mensagens anteriores, mais recente primeiro) ==="]
+        for i, msg in enumerate(thread_history, 1):
+            addr = msg.get("from", {}).get("emailAddress", {})
+            sender = f"{addr.get('name', '')} <{addr.get('address', '')}>".strip()
+            snippet = _strip_html(msg.get("body", {}).get("content", ""))[:300]
+            lines.append(
+                f"\n[{i}] De: {sender} | Data: {msg.get('receivedDateTime', '')}\n"
+                f"    Assunto: {msg.get('subject', '')}\n"
+                f"    Corpo: {snippet}{'...' if len(snippet) == 300 else ''}"
+            )
+        user_message += "\n".join(lines)
 
     logger.info(f"Analisando email: '{payload.subject}' de {payload.from_email}")
     logger.info(f"Conteúdo enviado ao Gemini:\n{user_message[:1000]}")
