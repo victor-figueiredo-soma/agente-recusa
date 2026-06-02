@@ -2,6 +2,7 @@ import os
 import requests
 import msal
 from utils.logger import get_logger
+from utils.retry import transient_retry
 
 logger = get_logger(__name__)
 
@@ -33,6 +34,7 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"}
 
 
+@transient_retry
 def get_message(message_id: str) -> dict:
     user_id = os.environ["MAILBOX_USER_ID"]
     select = "id,conversationId,subject,body,from,toRecipients,ccRecipients,receivedDateTime"
@@ -42,6 +44,7 @@ def get_message(message_id: str) -> dict:
     return resp.json()
 
 
+@transient_retry
 def get_conversation_messages(
     conversation_id: str,
     exclude_id: str | None = None,
@@ -100,6 +103,7 @@ def renew_subscription(subscription_id: str) -> None:
     logger.info(f"Subscription renovada: {subscription_id}")
 
 
+@transient_retry
 def send_reply(message_id: str, body_html: str) -> None:
     """Cria reply draft, substitui To: pelo email de notificação e envia."""
     user_id = os.environ["MAILBOX_USER_ID"]

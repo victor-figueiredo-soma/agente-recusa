@@ -6,6 +6,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from models.schemas import ProcessedEmail
 from utils.logger import get_logger
+from utils.retry import transient_retry
 
 _SP_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -75,6 +76,7 @@ def _nf_ja_registrada(
     return None
 
 
+@transient_retry
 def write_to_sheet(record: ProcessedEmail) -> str:
     spreadsheet_id = os.environ.get("SPREADSHEET_ID")
     worksheet_name = os.environ.get("WORKSHEET_NAME", "Emails Analisados")

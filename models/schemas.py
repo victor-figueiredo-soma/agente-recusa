@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 
 
@@ -21,6 +22,14 @@ class AnalysisResult(BaseModel):
     nota_fiscal: Optional[str] = None
     confianca: Optional[str] = None
     tipo_mensagem: Optional[str] = None
+
+    @field_validator("nota_fiscal")
+    @classmethod
+    def validate_nota_fiscal(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        valid = [nf.strip() for nf in v.split(",") if re.fullmatch(r"\d{7}", nf.strip())]
+        return ", ".join(valid) if valid else None
 
 
 class ProcessedEmail(BaseModel):
