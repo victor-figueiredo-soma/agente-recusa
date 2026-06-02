@@ -67,8 +67,44 @@ def get_conversation_messages(
     return messages[:top]
 
 
+def _list_subscriptions() -> list[dict]:
+    resp = requests.get(f"{_GRAPH_BASE}/subscriptions", headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("value", [])
+
+
+def _delete_subscription(subscription_id: str) -> None:
+    resp = requests.delete(
+        f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+
+def cleanup_stale_subscriptions(notification_url: str) -> None:
+    """Deleta subscriptions que apontam para caixas diferentes da atual."""
+    user_id = os.environ["MAILBOX_USER_ID"]
+    expected_resource = f"users/{user_id}/mailFolders/Inbox/messages"
+    try:
+        subs = _list_subscriptions()
+    except Exception as e:
+        logger.warning(f"Não foi possível listar subscriptions para limpeza: {e}")
+        return
+    for sub in subs:
+        resource = sub.get("resource", "")
+        sub_id = sub.get("id", "")
+        if resource != expected_resource:
+            try:
+                _delete_subscription(sub_id)
+                logger.info(f"Subscription obsoleta deletada: {sub_id} (resource: {resource})")
+            except Exception as e:
+                logger.warning(f"Falha ao deletar subscription obsoleta {sub_id}: {e}")
+
+
 def create_subscription(notification_url: str) -> str:
-    """Cria ou renova subscription para novos emails na caixa. Retorna subscriptionId."""
+    """Remove subscriptions obsoletas e cria nova para a caixa atual."""
+    cleanup_stale_subscriptions(notification_url)
     user_id = os.environ["MAILBOX_USER_ID"]
     payload = {
         "changeType": "created",
