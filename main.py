@@ -190,7 +190,7 @@ def _process_message(message_id: str) -> None:
     if target_to:
         to_addresses = [
             r.get("emailAddress", {}).get("address", "").lower()
-            for r in msg.get("toRecipients", [])
+            for r in msg.get("toRecipients", []) + msg.get("ccRecipients", [])
         ]
         if target_to not in to_addresses:
             logger.info(f"Email não endereçado a {target_to} — ignorado")

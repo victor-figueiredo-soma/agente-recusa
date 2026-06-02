@@ -35,7 +35,7 @@ def _headers() -> dict:
 
 def get_message(message_id: str) -> dict:
     user_id = os.environ["MAILBOX_USER_ID"]
-    select = "id,conversationId,subject,body,from,toRecipients,receivedDateTime"
+    select = "id,conversationId,subject,body,from,toRecipients,ccRecipients,receivedDateTime"
     url = f"{_GRAPH_BASE}/users/{user_id}/messages/{message_id}?$select={select}"
     resp = requests.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
