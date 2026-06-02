@@ -87,28 +87,78 @@ Remetente (domínio do email):
 - @jadlog.com.br → is_recusa = false SEMPRE. JADLOG nunca envia notificações de recusa para este mailbox.
 - Para Solução e Comboio: identificar pelo nome na assinatura ou corpo do email
 
-TAREFA:
-Analise o assunto e o remetente primeiro como sinais primários, depois confirme no corpo.
+=== PASSO A PASSO DE ANÁLISE ===
 
-Regras de extração:
-- TRANSPORTADORA: identifique pelo domínio do remetente (Braspress, Movvi) ou pelo nome mencionado
-  no corpo/assinatura (Solução, Comboio). Retorne apenas o nome normalizado (ex: "Braspress", "Movvi",
-  "Solução", "Comboio"). Se não identificado, retorne null.
-- NOTA FISCAL: extraia os 7 primeiros dígitos numéricos do número da NF, ignorando sub-séries
-  como "/72" ou qualquer sufixo após o 7º dígito. Se houver múltiplas NFs, retorne todas
-  separadas por vírgula (ex: "1528101, 1527451").
-- MOTIVO: normalize códigos de ocorrência ou linguagem livre para descrição clara
-  (ex: "311-PEDIDO CANCELADO" → "Pedido cancelado"; "não recebeu devido a desconto comercial" → "Desconto comercial").
-- TIPO DE MENSAGEM: classifique o formato do email:
-  "padrao_automatico" → emails com estrutura rígida e padronizada enviados automaticamente (Braspress, Movvi)
-  "mensagem_livre"    → emails com formato livre ou semi-estruturado, redigidos manualmente (Solução, Comboio)
+Siga esta sequência obrigatoriamente a cada email recebido:
 
-=== HISTÓRICO DA THREAD ===
-Quando fornecido, o campo "HISTÓRICO DA THREAD" contém as mensagens anteriores da mesma conversa,
-em ordem cronológica decrescente (mais recente primeiro). Use-o para:
-- Entender se este email é uma continuidade de uma notificação já enviada pela transportadora
-- Identificar se já houve resposta do time de logística na thread
-- Classificar com maior precisão se trata-se de um novo comunicado de recusa ou apenas uma reinteração
+PASSO 1 — Verificar o domínio do remetente (exclusão imediata)
+  - @jadlog.com.br → is_recusa = false. Encerre a análise aqui.
+  - @braspress.com.br → transportadora = "Braspress" (confirmar no corpo)
+  - @movvi.com.br → transportadora = "Movvi" (confirmar no corpo)
+  - Outros domínios → transportadora será identificada no corpo/assinatura (Passo 3)
+
+PASSO 2 — Verificar o assunto (sinais primários, não conclusivos)
+  - "COMUNICAÇÃO DE PENDÊNCIAS", "Comunicado de Pendência", "Pendência de Entrega",
+    "Aviso de Pendência" → forte indicador de is_recusa = true; confirmar no corpo
+  - "[CADASTROS", "Solicitações", "STATUS de lojas", "mudança de STATUS" → forte indicador
+    de is_recusa = false; confirmar no corpo
+  - Palavras como "recusada", "ocorrência", "pendência" → indicador para Solução/Comboio
+  - NÃO extraia NF do assunto a menos que o número esteja explicitamente precedido de
+    "NF", "NFs" ou "Nota Fiscal" (ex: "NFs 1527451 e 1527590 — E Flores Curitiba")
+  - Números isolados no assunto sem essa identificação devem ser ignorados para fins de NF
+
+PASSO 3 — Analisar o corpo do email
+  - Identificar se é uma notificação de falha ou impossibilidade de entrega
+  - Identificar transportadora pelo nome na assinatura ou corpo (Solução, Comboio), se
+    não resolvida no Passo 1
+  - Confirmação de entrega bem-sucedida → is_recusa = false
+  - Email administrativo, financeiro, de cadastro ou operacional interno → is_recusa = false
+  - Emails de transportadoras sobre assuntos operacionais que não sejam notificação de falha
+    de entrega (ex: relatórios, templates, atualizações de status de loja, comunicados gerais)
+    → is_recusa = false
+  - "Devolutivas" no contexto de cadastro de lojas ou processos comerciais NÃO é recusa
+    de entrega → is_recusa = false
+  - Spam ou email automático sem conteúdo de entrega → is_recusa = false
+
+PASSO 4 — Extrair a Nota Fiscal (obrigatório para is_recusa = true)
+  - Braspress: localizar "Notas(s) Fiscal(is):" e extrair os 7 dígitos antes da barra;
+    "/72" e similares são sub-série e devem ser descartados (ex: "1528101/72" → "1528101")
+  - Movvi: localizar "NF " na frase-chave e extrair os 7 dígitos do número da NF
+  - Solução / Comboio: buscar "NF", "NFs" ou "Nota Fiscal" seguido de número de 7 dígitos
+    no corpo; NÃO usar números do assunto que não tenham essa identificação explícita
+  - Se houver múltiplas NFs, retornar todas separadas por vírgula (ex: "1528101, 1527451")
+  - A NF deve ter exatamente 7 dígitos. Números com menos ou mais de 7 dígitos NÃO são NF
+    e devem ser ignorados (ex: "123456" ou "12345678" → ignorar)
+  - Se nenhuma NF for identificada → nota_fiscal = null → is_recusa = false (regra absoluta)
+
+PASSO 5 — Extrair o motivo da recusa
+  - Normalizar código de ocorrência ou linguagem livre para descrição clara e objetiva
+    (ex: "311-PEDIDO CANCELADO" → "Pedido cancelado";
+         "não recebeu devido a desconto comercial" → "Desconto comercial")
+  - Se is_recusa = false → motivo_recusa = null
+
+PASSO 6 — Considerar o histórico da thread (quando fornecido)
+  - O campo "HISTÓRICO DA THREAD" contém mensagens anteriores em ordem cronológica
+    decrescente (mais recente primeiro)
+  - Usar para: entender se é continuidade de notificação já enviada; identificar se já
+    houve resposta do time de logística; confirmar ou ajustar a classificação final
+
+PASSO 7 — Determinar is_recusa
+  TODOS os critérios abaixo devem ser satisfeitos para is_recusa = true:
+  1. Transportadora notificando falha, pendência ou impossibilidade de entrega de remessa específica
+  2. Nota Fiscal identificável no corpo (7 dígitos) — obrigatório
+  3. Comunicado de devolução automática por não-entrega, recusa pelo destinatário (lojista),
+     ou solicitação de autorização de reentrega
+  Se qualquer critério não for satisfeito → is_recusa = false
+
+PASSO 8 — Classificar o tipo de mensagem
+  "padrao_automatico" → estrutura rígida e padronizada, gerada automaticamente (Braspress, Movvi)
+  "mensagem_livre"    → formato livre ou semi-estruturado, redigido manualmente (Solução, Comboio)
+
+PASSO 9 — Definir confiança
+  "alta"  → remetente conhecido + NF clara + estrutura reconhecível
+  "media" → um ou mais campos com ambiguidade mas classificação possível
+  "baixa" → múltiplas incertezas ou email atípico
 
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
 {
@@ -119,24 +169,6 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>",
   "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>"
 }
-
-Critérios para is_recusa = true (TODOS devem ser satisfeitos):
-- Transportadora informando falha, pendência ou impossibilidade de entrega de uma remessa específica
-- O email contém obrigatoriamente um número de Nota Fiscal identificável (7 dígitos)
-- Comunicado de devolução automática por não-entrega, ou notificação de recusa pelo destinatário (lojista)
-- Solicitação de autorização de reentrega após recusa
-
-REGRA OBRIGATÓRIA: Se não for possível identificar uma Nota Fiscal (nota_fiscal = null), então
-is_recusa DEVE ser false. Toda notificação real de não-entrega sempre contém o número da NF.
-
-Critérios para is_recusa = false:
-- Nenhum número de Nota Fiscal identificável no email
-- Email não relacionado a entrega de uma remessa específica
-- Confirmação de entrega bem-sucedida
-- Email administrativo, financeiro, de cadastro ou operacional interno (ex: assuntos com "[CADASTROS", "Solicitações", "STATUS de lojas", "mudança de STATUS")
-- Emails de transportadoras sobre assuntos operacionais que não sejam notificação de falha de entrega (ex: relatórios, templates, atualizações de status de loja, comunicados gerais)
-- "Devolutivas" no contexto de cadastro de lojas ou processos comerciais NÃO é recusa de entrega
-- Spam ou automático sem conteúdo de entrega
 """
 
 
