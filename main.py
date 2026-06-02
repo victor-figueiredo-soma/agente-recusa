@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from models.schemas import EmailPayload, ProcessedEmail, GraphNotificationPayload
 from agents.email_analyzer import analyze_email
 from agents.sheet_writer import write_to_sheet
-from agents import graph_client
+from agents import graph_client, bq_client
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -238,6 +238,14 @@ def _process_message(message_id: str) -> None:
     ja_registradas: list[str] = []
 
     for nf in nfs:
+        if nf:
+            try:
+                if not bq_client.is_nf_atacado(nf):
+                    logger.info(f"NF {nf} não é do Atacado — ignorada")
+                    continue
+            except Exception as e:
+                logger.error(f"Erro ao validar NF {nf} no BigQuery: {e} — processando mesmo assim")
+
         record = ProcessedEmail(
             message_id=payload.messageId,
             conversation_id=payload.conversationId,
