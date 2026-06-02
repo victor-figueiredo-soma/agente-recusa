@@ -259,8 +259,9 @@ def _process_message(message_id: str) -> None:
         nf_label = nf or "não identificada"
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
-        elif tipo_interacao == "reinteracao":
+        elif tipo_interacao == "reiteracao_outra_thread":
             ja_registradas.append(nf_label)
+        # reiteracao_mesma_thread → ignora silenciosamente
 
     if not novos_chamados and not ja_registradas:
         return
