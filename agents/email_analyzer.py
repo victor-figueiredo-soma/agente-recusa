@@ -216,5 +216,23 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
     raw = response.text.strip()
     logger.info(f"Resposta Gemini: {raw}")
 
+    try:
+        from utils import pricing, supabase_client
+        usage = response.usage_metadata
+        if usage:
+            events = pricing.gemini_cost_brl(
+                prompt_tokens=usage.prompt_token_count or 0,
+                thinking_tokens=getattr(usage, "thoughts_token_count", None) or 0,
+                output_tokens=usage.candidates_token_count or 0,
+            )
+            for event in events:
+                supabase_client.insert_usage_event(
+                    origem="gemini",
+                    email_id=payload.messageId,
+                    **event,
+                )
+    except Exception as e:
+        logger.warning(f"Falha ao registrar uso Gemini: {e}")
+
     data = json.loads(raw)
     return AnalysisResult(**data)

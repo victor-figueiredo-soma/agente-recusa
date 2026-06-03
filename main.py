@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -171,6 +172,19 @@ async def _dispatch_message(message_id: str) -> None:
 
 
 def _process_message(message_id: str) -> None:
+    start_time = time.monotonic()
+    try:
+        _process_message_inner(message_id)
+    finally:
+        try:
+            from utils import pricing, supabase_client
+            event = pricing.railway_cost_brl(time.monotonic() - start_time)
+            supabase_client.insert_usage_event(origem="railway", email_id=message_id, **event)
+        except Exception as e:
+            logger.warning(f"Falha ao registrar custo Railway: {e}")
+
+
+def _process_message_inner(message_id: str) -> None:
     try:
         msg = graph_client.get_message(message_id)
     except Exception as e:
