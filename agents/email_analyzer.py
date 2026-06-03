@@ -83,6 +83,10 @@ Sinais: menção a SEFAZ, Receita Federal, posto fiscal, barreira fiscal, DANFE 
 NF-e com divergência, apreensão fiscal, "retida em barreiras fiscais", ICMS não recolhido,
 documentação fiscal irregular, retenção tributária, etc.
 
+EXTRAVIO: mercadoria perdida, extraviada ou não localizada pela transportadora.
+Sinais: palavras como "extravio", "extraviado", "mercadoria não localizada", "carga perdida",
+"sinistro de extravio", "não encontrada no sistema", "paradeiro desconhecido", etc.
+
 === SINAIS PRIMÁRIOS DE IDENTIFICAÇÃO ===
 Assunto do email para BRASPRESS e MOVVI:
 - "COMUNICAÇÃO DE PENDÊNCIAS", "Comunicado de Pendência", "Pendência de Entrega", "Aviso de Pendência"
@@ -174,6 +178,7 @@ PASSO 9 — Definir confiança
 PASSO 10 — Classificar status
   "RECUSA"           → recusa operacional pelo destinatário ou impossibilidade de entrega
   "RETENÇÃO FISCAL"  → mercadoria retida por órgão fiscal ou problema documental fiscal
+  "EXTRAVIO"         → mercadoria perdida ou não localizada pela transportadora
   Se is_recusa = false → status = null
 
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
@@ -184,7 +189,7 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
   "motivo_recusa": "<motivo da não-entrega em linguagem clara e objetiva, ou null se não for recusa>",
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>",
   "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>",
-  "status": "<'RECUSA' ou 'RETENÇÃO FISCAL', ou null se is_recusa = false>"
+  "status": "<'RECUSA', 'RETENÇÃO FISCAL' ou 'EXTRAVIO', ou null se is_recusa = false>"
 }
 """
 
