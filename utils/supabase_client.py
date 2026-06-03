@@ -26,7 +26,7 @@ def insert_usage_event(
 ) -> None:
     if not os.environ.get("SUPABASE_URL"):
         return
-    _get_client().table("token_usage").insert({
+    _get_client().table("custos_agente_recusa").insert({
         "origem": origem,
         "tipo_token": tipo_token,
         "quantidade": quantidade,
