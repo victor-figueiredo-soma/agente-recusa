@@ -254,7 +254,7 @@ def _process_message_inner(message_id: str) -> None:
     for nf in nfs:
         if nf:
             try:
-                if not bq_client.is_nf_atacado(nf):
+                if not bq_client.is_nf_atacado(nf, email_id=payload.messageId):
                     logger.info(f"NF {nf} não é do Atacado — ignorada")
                     continue
             except Exception as e:

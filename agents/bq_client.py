@@ -42,14 +42,14 @@ def _run_bq_query(nota_fiscal: str, client: bigquery.Client) -> tuple[bool, int]
     return len(rows) > 0, job.total_bytes_billed or 0
 
 
-def is_nf_atacado(nota_fiscal: str) -> bool:
+def is_nf_atacado(nota_fiscal: str, email_id: str | None = None) -> bool:
     client = _get_client()
     found, bytes_billed = _run_bq_query(nota_fiscal, client)
     logger.info(f"BigQuery — NF {nota_fiscal}: {'Atacado' if found else 'não encontrada (Varejo)'}")
     try:
         from utils import pricing, supabase_client
         event = pricing.bq_cost_brl(bytes_billed)
-        supabase_client.insert_usage_event(origem="bigquery", **event)
+        supabase_client.insert_usage_event(origem="bigquery", email_id=email_id, **event)
     except Exception as e:
         logger.warning(f"Falha ao registrar uso BQ: {e}")
     return found
