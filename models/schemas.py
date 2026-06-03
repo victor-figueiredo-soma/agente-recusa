@@ -22,6 +22,7 @@ class AnalysisResult(BaseModel):
     nota_fiscal: Optional[str] = None
     confianca: Optional[str] = None
     tipo_mensagem: Optional[str] = None
+    status: Optional[str] = None  # "RECUSA" ou "RETENÇÃO FISCAL"
 
     @field_validator("nota_fiscal")
     @classmethod
@@ -43,6 +44,7 @@ class ProcessedEmail(BaseModel):
     nota_fiscal: Optional[str] = None
     motivo_recusa: Optional[str] = None
     confianca: Optional[str] = None
+    status: str = "RECUSA"
     tipo_interacao: str = "primeira"
     acao: str = "Chamado Recebido"
 

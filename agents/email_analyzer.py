@@ -72,6 +72,17 @@ Estrutura característica:
 - Identificação: nome "COMBOIO" aparece na assinatura ou no corpo do email
 - Solicita confirmação de reentrega ou instrução do remetente
 
+=== DISTINÇÃO: RECUSA vs RETENÇÃO FISCAL ===
+
+RECUSA: destinatário (lojista) recusou ou não aceitou a mercadoria, ou a transportadora
+não conseguiu efetuar a entrega por motivo operacional (endereço errado, estabelecimento
+fechado, pedido cancelado pelo destinatário, carga não reconhecida, etc.).
+
+RETENÇÃO FISCAL: mercadoria retida por órgão governamental ou problema documental fiscal.
+Sinais: menção a SEFAZ, Receita Federal, posto fiscal, barreira fiscal, DANFE inválido,
+NF-e com divergência, apreensão fiscal, "retida em barreiras fiscais", ICMS não recolhido,
+documentação fiscal irregular, retenção tributária, etc.
+
 === SINAIS PRIMÁRIOS DE IDENTIFICAÇÃO ===
 Assunto do email para BRASPRESS e MOVVI:
 - "COMUNICAÇÃO DE PENDÊNCIAS", "Comunicado de Pendência", "Pendência de Entrega", "Aviso de Pendência"
@@ -148,7 +159,7 @@ PASSO 7 — Determinar is_recusa
   1. Transportadora notificando falha, pendência ou impossibilidade de entrega de remessa específica
   2. Nota Fiscal identificável no corpo (7 dígitos) — obrigatório
   3. Comunicado de devolução automática por não-entrega, recusa pelo destinatário (lojista),
-     ou solicitação de autorização de reentrega
+     solicitação de autorização de reentrega, OU retenção fiscal/documental da mercadoria
   Se qualquer critério não for satisfeito → is_recusa = false
 
 PASSO 8 — Classificar o tipo de mensagem
@@ -160,14 +171,20 @@ PASSO 9 — Definir confiança
   "media" → um ou mais campos com ambiguidade mas classificação possível
   "baixa" → múltiplas incertezas ou email atípico
 
+PASSO 10 — Classificar status
+  "RECUSA"           → recusa operacional pelo destinatário ou impossibilidade de entrega
+  "RETENÇÃO FISCAL"  → mercadoria retida por órgão fiscal ou problema documental fiscal
+  Se is_recusa = false → status = null
+
 Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exatamente este schema:
 {
-  "is_recusa": <true se for notificação de não-entrega, false caso contrário>,
+  "is_recusa": <true se for notificação de não-entrega ou retenção fiscal, false caso contrário>,
   "transportadora": "<nome normalizado da transportadora, ou null se não identificado>",
   "nota_fiscal": "<7 primeiros dígitos da(s) NF(s), separados por vírgula se houver mais de uma, ou null se não identificado>",
   "motivo_recusa": "<motivo da não-entrega em linguagem clara e objetiva, ou null se não for recusa>",
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>",
-  "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>"
+  "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>",
+  "status": "<'RECUSA' ou 'RETENÇÃO FISCAL', ou null se is_recusa = false>"
 }
 """
 

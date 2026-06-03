@@ -33,6 +33,7 @@ _HEADERS = [
     "Transportadora",
     "Assunto",
     "Nota Fiscal",
+    "Status",
     "Motivo da Recusa",
     "Confiança",
     "Tipo de Interação",
@@ -54,7 +55,7 @@ def _ensure_headers(worksheet: gspread.Worksheet) -> None:
     existing = worksheet.row_values(1)
     if existing != _HEADERS:
         worksheet.update("A1", [_HEADERS])
-        worksheet.format("A1:K1", {
+        worksheet.format("A1:L1", {
             "textFormat": {"bold": True},
             "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.6},
         })
@@ -112,6 +113,7 @@ def write_to_sheet(record: ProcessedEmail) -> str:
         (record.transportadora or "").upper(),
         record.assunto,
         record.nota_fiscal or "",
+        record.status,
         record.motivo_recusa or "",
         record.confianca or "",
         tipo_interacao,

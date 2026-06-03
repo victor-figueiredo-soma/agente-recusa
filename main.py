@@ -271,6 +271,7 @@ def _process_message_inner(message_id: str) -> None:
             nota_fiscal=nf,
             motivo_recusa=analysis.motivo_recusa,
             confianca=analysis.confianca,
+            status=analysis.status or "RECUSA",
         )
         try:
             tipo_interacao = write_to_sheet(record)
@@ -291,13 +292,20 @@ def _process_message_inner(message_id: str) -> None:
     transportadora = (analysis.transportadora or "não identificada").upper()
     motivo = analysis.motivo_recusa or "não identificado"
     data_sp = _fmt_sp_time(payload.receivedDateTime)
+    is_retencao = (analysis.status or "RECUSA") == "RETENÇÃO FISCAL"
 
     if novos_chamados and ja_registradas:
         qtd = len(novos_chamados)
-        header_text = (
-            f"{qtd} chamado(s) de recusa registrado(s). "
-            f"{len(ja_registradas)} NF(s) já possuíam chamado aberto."
-        )
+        if is_retencao:
+            header_text = (
+                f"{qtd} retenção(ões) fiscal(is) registrada(s). "
+                f"{len(ja_registradas)} NF(s) já possuíam chamado aberto."
+            )
+        else:
+            header_text = (
+                f"{qtd} chamado(s) de recusa registrado(s). "
+                f"{len(ja_registradas)} NF(s) já possuíam chamado aberto."
+            )
         novos_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
         ja_list = "".join(f"<li>NF {nf} — chamado já existente no Sheets</li>" for nf in ja_registradas)
         nf_items = (
@@ -307,10 +315,13 @@ def _process_message_inner(message_id: str) -> None:
     elif novos_chamados:
         qtd = len(novos_chamados)
         if qtd == 1:
-            header_text = "Novo chamado de recusa registrado."
+            header_text = "Retenção fiscal registrada." if is_retencao else "Novo chamado de recusa registrado."
             nf_items = f"<li><strong>Nota Fiscal:</strong> {novos_chamados[0]}</li>"
         else:
-            header_text = f"{qtd} chamados de recusa registrados."
+            header_text = (
+                f"{qtd} retenções fiscais registradas." if is_retencao
+                else f"{qtd} chamados de recusa registrados."
+            )
             nf_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
             nf_items = f"<li><strong>Notas Fiscais ({qtd} chamados):</strong><ul>{nf_list}</ul></li>"
     else:
