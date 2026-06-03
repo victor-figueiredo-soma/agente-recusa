@@ -282,6 +282,16 @@ def _process_message_inner(message_id: str) -> None:
         nf_label = nf or "não identificada"
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
+            try:
+                from utils import supabase_client
+                supabase_client.insert_chamado(
+                    status=analysis.status or "RECUSA",
+                    motivo=analysis.motivo_recusa,
+                    nota_fiscal=nf,
+                    email_id=payload.messageId,
+                )
+            except Exception as e:
+                logger.warning(f"Falha ao registrar chamado no Supabase: {e}")
         elif tipo_interacao == "reiteracao_outra_thread":
             ja_registradas.append(nf_label)
         # reiteracao_mesma_thread → ignora silenciosamente
