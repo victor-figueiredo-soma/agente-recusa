@@ -72,7 +72,7 @@ Estrutura característica:
 - Identificação: nome "COMBOIO" aparece na assinatura ou no corpo do email
 - Solicita confirmação de reentrega ou instrução do remetente
 
-=== DISTINÇÃO: RECUSA vs RETENÇÃO FISCAL ===
+=== DISTINÇÃO: RECUSA vs RETENÇÃO FISCAL vs VOLUME TROCADO/INCORRETO ===
 
 RECUSA: destinatário (lojista) recusou ou não aceitou a mercadoria, ou a transportadora
 não conseguiu efetuar a entrega por motivo operacional (endereço errado, estabelecimento
@@ -86,6 +86,15 @@ documentação fiscal irregular, retenção tributária, etc.
 EXTRAVIO: mercadoria perdida, extraviada ou não localizada pela transportadora.
 Sinais: palavras como "extravio", "extraviado", "mercadoria não localizada", "carga perdida",
 "sinistro de extravio", "não encontrada no sistema", "paradeiro desconhecido", etc.
+
+VOLUME TROCADO / VOLUME INCORRETO: erro de expedição — a transportadora ou o remetente
+enviou caixas/volumes errados ao destinatário (volumes destinados a outro cliente, produtos
+trocados, quantidade incorreta enviada, etc.). NÃO é recusa. O destinatário não recusou
+a entrega; o problema é do remetente ou da transportadora na separação/envio.
+Sinais: "volume trocado", "volumes trocados", "volume incorreto", "volumes incorretos",
+"caixas trocadas", "produto errado", "mercadoria trocada", "enviado por engano", "entregue
+errado", "não corresponde ao pedido", "não é o nosso produto", "produtos de outro cliente", etc.
+→ is_recusa = false SEMPRE para estes casos.
 
 === SINAIS PRIMÁRIOS DE IDENTIFICAÇÃO ===
 Assunto do email para BRASPRESS e MOVVI:
@@ -134,6 +143,8 @@ PASSO 3 — Analisar o corpo do email
   - "Devolutivas" no contexto de cadastro de lojas ou processos comerciais NÃO é recusa
     de entrega → is_recusa = false
   - Spam ou email automático sem conteúdo de entrega → is_recusa = false
+  - Notificação de volume trocado, volume incorreto ou erro de expedição (caixas/produtos
+    errados enviados ao destinatário) → is_recusa = false
 
 PASSO 4 — Extrair a Nota Fiscal (obrigatório para is_recusa = true)
   - Braspress: localizar "Notas(s) Fiscal(is):" e extrair os 7 dígitos antes da barra;
@@ -165,6 +176,11 @@ PASSO 7 — Determinar is_recusa
   3. Comunicado de devolução automática por não-entrega, recusa pelo destinatário (lojista),
      solicitação de autorização de reentrega, OU retenção fiscal/documental da mercadoria
   Se qualquer critério não for satisfeito → is_recusa = false
+
+  EXCLUSÕES ABSOLUTAS (is_recusa = false independentemente de qualquer outro sinal):
+  - Volume trocado / volume incorreto / erro de expedição: quando o problema é que foram
+    enviados volumes ou produtos errados ao destinatário (erro do remetente/transportadora
+    na separação), e NÃO uma recusa de entrega pelo lojista.
 
 PASSO 8 — Classificar o tipo de mensagem
   "padrao_automatico" → estrutura rígida e padronizada, gerada automaticamente (Braspress, Movvi)

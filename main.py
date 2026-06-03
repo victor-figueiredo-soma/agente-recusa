@@ -243,10 +243,14 @@ def _process_message_inner(message_id: str) -> None:
     if not analysis.is_recusa:
         return
 
+    if not analysis.nota_fiscal:
+        logger.info(f"Email {message_id} classificado como recusa mas sem NF identificada — ignorado")
+        return
+
     remetente = f"{payload.fromName} <{payload.from_email}>" if payload.fromName else payload.from_email
 
-    nfs_raw = analysis.nota_fiscal or ""
-    nfs = [nf.strip() for nf in nfs_raw.split(",") if nf.strip()] if nfs_raw else [None]
+    nfs_raw = analysis.nota_fiscal
+    nfs = [nf.strip() for nf in nfs_raw.split(",") if nf.strip()]
 
     novos_chamados: list[str] = []
     ja_registradas: list[str] = []
