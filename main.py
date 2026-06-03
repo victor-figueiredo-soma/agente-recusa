@@ -314,7 +314,7 @@ def _process_message_inner(message_id: str) -> None:
         elif is_extravio:
             header_text = f"{qtd} extravio(s) registrado(s). {ja_qtd} NF(s) já possuíam chamado aberto."
         else:
-            header_text = f"{qtd} chamado(s) de recusa registrado(s). {ja_qtd} NF(s) já possuíam chamado aberto."
+            header_text = f"{qtd} recusa(s) registrada(s). {ja_qtd} NF(s) já possuíam chamado aberto."
         novos_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
         ja_list = "".join(f"<li>NF {nf} — chamado já existente no Sheets</li>" for nf in ja_registradas)
         nf_items = (
@@ -329,7 +329,7 @@ def _process_message_inner(message_id: str) -> None:
             elif is_extravio:
                 header_text = "Extravio registrado."
             else:
-                header_text = "Novo chamado de recusa registrado."
+                header_text = "Recusa registrada."
             nf_items = f"<li><strong>Nota Fiscal:</strong> {novos_chamados[0]}</li>"
         else:
             if is_retencao:
@@ -337,7 +337,7 @@ def _process_message_inner(message_id: str) -> None:
             elif is_extravio:
                 header_text = f"{qtd} extravios registrados."
             else:
-                header_text = f"{qtd} chamados de recusa registrados."
+                header_text = f"{qtd} recusas registradas."
             nf_list = "".join(f"<li>Chamado {i + 1} — NF {nf}</li>" for i, nf in enumerate(novos_chamados))
             nf_items = f"<li><strong>Notas Fiscais ({qtd} chamados):</strong><ul>{nf_list}</ul></li>"
     else:
