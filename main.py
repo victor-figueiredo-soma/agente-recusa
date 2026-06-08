@@ -30,7 +30,9 @@ def _fmt_sp_time(dt_str: str) -> str:
         return dt_str
 
 
-_RENEWAL_INTERVAL_SECONDS = 48 * 3600  # renova a cada 48h (subscription dura ~3 dias)
+# Renova bem antes da expiração (subscription dura 2 dias) para dar folga a
+# restarts/drift — renovar no instante exato da expiração causa PATCH 400.
+_RENEWAL_INTERVAL_SECONDS = 24 * 3600  # renova a cada 24h
 
 
 async def _renewal_loop() -> None:
@@ -40,17 +42,53 @@ async def _renewal_loop() -> None:
         if not _subscription_id:
             continue
         try:
-            graph_client.renew_subscription(_subscription_id)
+            # to_thread: o renew/create usa requests síncrono; rodar direto na
+            # corrotina trava o event loop e impede o FastAPI de responder a
+            # requisição de validação do Graph dentro dos 10s → "validation timed out".
+            await asyncio.to_thread(graph_client.renew_subscription, _subscription_id)
             logger.info("Subscription renovada automaticamente")
         except Exception as e:
             logger.error(f"Falha na renovação automática: {e} — tentando recriar subscription")
             base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
             if base_url:
                 try:
-                    _subscription_id = graph_client.create_subscription(f"{base_url}/graph-webhook")
+                    _subscription_id = await asyncio.to_thread(
+                        graph_client.create_subscription, f"{base_url}/graph-webhook"
+                    )
                     logger.info(f"Subscription recriada: {_subscription_id}")
                 except Exception as e2:
                     logger.error(f"Falha ao recriar subscription: {e2}")
+
+
+_WATCHDOG_INTERVAL_SECONDS = 3600  # verifica a saúde da subscription a cada 1h
+
+
+async def _watchdog_loop() -> None:
+    """Auto-recuperação: garante que sempre exista uma subscription válida.
+
+    Independente do timer de renovação, verifica periodicamente se a subscription
+    ainda existe no Graph e a recria sozinho caso tenha sumido/expirado ou nunca
+    tenha sido criada (ex.: falha de validação no startup). Robusto a restart do
+    Railway e a falhas de renovação — sem necessidade de novo deploy/ajuste."""
+    global _subscription_id
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL_SECONDS)
+        base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+        if not base_url:
+            continue
+        try:
+            needs_recreate = True
+            if _subscription_id:
+                sub = await asyncio.to_thread(graph_client.get_subscription, _subscription_id)
+                needs_recreate = sub is None
+            if needs_recreate:
+                logger.warning("Watchdog: subscription ausente/expirada — recriando")
+                _subscription_id = await asyncio.to_thread(
+                    graph_client.create_subscription, f"{base_url}/graph-webhook"
+                )
+                logger.info(f"Watchdog: subscription recriada: {_subscription_id}")
+        except Exception as e:
+            logger.error(f"Watchdog: falha ao verificar/recriar subscription: {e}")
 
 
 async def _create_subscription_deferred() -> None:
@@ -81,15 +119,17 @@ async def _create_subscription_deferred() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    startup_task = asyncio.create_task(_create_subscription_deferred())
-    renewal_task = asyncio.create_task(_renewal_loop())
+    tasks = [
+        asyncio.create_task(_create_subscription_deferred()),
+        asyncio.create_task(_renewal_loop()),
+        asyncio.create_task(_watchdog_loop()),
+    ]
     yield
-    startup_task.cancel()
-    renewal_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await startup_task
-    with suppress(asyncio.CancelledError):
-        await renewal_task
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(lifespan=lifespan)

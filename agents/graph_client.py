@@ -73,6 +73,20 @@ def _list_subscriptions() -> list[dict]:
     return resp.json().get("value", [])
 
 
+def get_subscription(subscription_id: str) -> dict | None:
+    """Retorna a subscription do Graph, ou None se não existir mais (404).
+    Usado pelo watchdog para detectar subscription ausente/expirada."""
+    resp = requests.get(
+        f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _delete_subscription(subscription_id: str) -> None:
     resp = requests.delete(
         f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
@@ -167,6 +181,28 @@ def send_reply(message_id: str, body_html: str) -> None:
     resp = requests.post(send_url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     logger.info(f"Reply enviado para {notification_email} (thread de {message_id})")
+
+
+def send_alert_mail(to: str, subject: str, body_html: str) -> None:
+    """Envia um e-mail de alerta standalone (não-reply) para `to`.
+    Sem @transient_retry e sem logging interno de propósito: é chamado pelo
+    handler de alerta de erros e não pode recursar nem disparar novos alertas."""
+    user_id = os.environ["MAILBOX_USER_ID"]
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": body_html},
+            "toRecipients": [{"emailAddress": {"address": to}}],
+        },
+        "saveToSentItems": False,
+    }
+    resp = requests.post(
+        f"{_GRAPH_BASE}/users/{user_id}/sendMail",
+        json=payload,
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
 
 
 def _expiration_datetime() -> str:
