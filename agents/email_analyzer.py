@@ -2,10 +2,28 @@ import os
 import re
 import html
 import json
+import threading
 from google import genai
 from google.genai import types
 from models.schemas import EmailPayload, AnalysisResult
 from utils.logger import get_logger
+from utils.retry import transient_retry
+
+_genai_client: genai.Client | None = None
+_genai_lock = threading.Lock()
+
+
+def _get_genai_client() -> genai.Client:
+    """Cliente Gemini em cache (singleton) — evita reinstanciar a cada e-mail."""
+    global _genai_client
+    if _genai_client is None:
+        with _genai_lock:
+            if _genai_client is None:
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if not api_key:
+                    raise ValueError("GEMINI_API_KEY não configurada")
+                _genai_client = genai.Client(api_key=api_key)
+    return _genai_client
 
 
 def _strip_quoted_html(text: str) -> str:
@@ -23,10 +41,6 @@ def _strip_html(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-
-# Limite de caracteres do corpo completo (com citações) enviado no fallback —
-# evita custo/contexto excessivo em cadeias muito longas de encaminhamento.
-_MAX_BODY_CHARS = 10_000
 
 # Indícios de que o texto contém a notificação da transportadora (e não só uma
 # resposta curta tipo "favor verificar").
@@ -50,11 +64,13 @@ def _body_for_analysis(raw_html: str) -> str:
     e-mails diretos da transportadora. Mas se esse texto for curto demais ou não
     tiver indícios de notificação (NF/CT-e/ocorrência), faz fallback para o corpo
     COMPLETO com citações: é o caso das pendências encaminhadas/respondidas, em que
-    a notificação original (NF, CT-e, motivo) só existe no trecho citado."""
+    a notificação original (NF, CT-e, motivo) só existe no trecho citado.
+
+    Sem truncamento: leva todo o conteúdo disponível."""
     dequoted = _strip_html(_strip_quoted_html(raw_html))
     if _has_carrier_signal(dequoted):
         return dequoted
-    return _strip_html(raw_html)[:_MAX_BODY_CHARS]
+    return _strip_html(raw_html)
 
 
 logger = get_logger(__name__)
@@ -244,13 +260,25 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
 """
 
 
-def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = None) -> AnalysisResult:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY não configurada")
+@transient_retry
+def _generate(client, model_name: str, user_message: str):
+    """Chamada ao Gemini com retry transitório (429/5xx/timeout) — backoff
+    exponencial, 3 tentativas. Sem o retry, uma instabilidade do Gemini faz o
+    e-mail ser descartado sem reprocessamento."""
+    return client.models.generate_content(
+        model=model_name,
+        contents=user_message,
+        config=types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            temperature=0.1,
+            response_mime_type="application/json",
+        ),
+    )
 
+
+def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = None) -> AnalysisResult:
     model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    client = genai.Client(api_key=api_key)
+    client = _get_genai_client()
 
     user_message = (
         f"Assunto: {payload.subject}\n"
@@ -264,9 +292,12 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
         for i, msg in enumerate(thread_history, 1):
             addr = msg.get("from", {}).get("emailAddress", {})
             sender = f"{addr.get('name', '')} <{addr.get('address', '')}>".strip()
-            # _strip_quoted_html antes do _strip_html: remove a thread citada que
-            # cada reply arrasta, evitando duplicar todo o histórico por mensagem.
-            corpo = _strip_html(_strip_quoted_html(msg.get("body", {}).get("content", "")))
+            raw = msg.get("body", {}).get("content", "")
+            # Opção 1 — leva tudo, sem duplicar: a mensagem mais recente (i == 1)
+            # já carrega a cadeia inteira citada (inclui originais e encaminhados),
+            # então vai com o corpo COMPLETO. As demais entram só com o texto novo
+            # (de-quotado), para não repetir a mesma cadeia N vezes. Sem truncamento.
+            corpo = _strip_html(raw) if i == 1 else _strip_html(_strip_quoted_html(raw))
             lines.append(
                 f"\n[{i}] De: {sender} | Data: {msg.get('receivedDateTime', '')}\n"
                 f"    Assunto: {msg.get('subject', '')}\n"

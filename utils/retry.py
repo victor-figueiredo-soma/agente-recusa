@@ -22,6 +22,21 @@ def _is_retryable(exc: BaseException) -> bool:
             return True
     except Exception:
         pass
+    # google-genai (SDK do Gemini) levanta suas próprias exceções, não as do
+    # google.api_core. APIError.code é o status HTTP — retry em 429 e 5xx.
+    try:
+        from google.genai import errors as genai_errors
+        if isinstance(exc, genai_errors.APIError):
+            return getattr(exc, "code", None) in (408, 429, 500, 502, 503, 504)
+    except Exception:
+        pass
+    # google-genai usa httpx por baixo — erros de rede transitórios.
+    try:
+        import httpx
+        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)):
+            return True
+    except Exception:
+        pass
     return False
 
 

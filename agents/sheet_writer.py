@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import gspread
@@ -9,6 +10,9 @@ from utils.logger import get_logger
 from utils.retry import transient_retry
 
 _SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+_gs_client: gspread.Client | None = None
+_gs_lock = threading.Lock()
 
 
 def _to_sp_time(dt_str: str) -> str:
@@ -42,13 +46,19 @@ _HEADERS = [
 
 
 def _get_client() -> gspread.Client:
-    creds_raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    if not creds_raw:
-        raise ValueError("GOOGLE_CREDENTIALS_JSON não configurada")
-
-    creds_dict = json.loads(creds_raw)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=_SCOPES)
-    return gspread.authorize(creds)
+    """Cliente gspread em cache (singleton). Evita refazer a troca OAuth
+    (round-trip de rede) e o parse de credenciais a cada gravação."""
+    global _gs_client
+    if _gs_client is None:
+        with _gs_lock:
+            if _gs_client is None:
+                creds_raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+                if not creds_raw:
+                    raise ValueError("GOOGLE_CREDENTIALS_JSON não configurada")
+                creds_dict = json.loads(creds_raw)
+                creds = Credentials.from_service_account_info(creds_dict, scopes=_SCOPES)
+                _gs_client = gspread.authorize(creds)
+    return _gs_client
 
 
 def _ensure_headers(worksheet: gspread.Worksheet) -> None:

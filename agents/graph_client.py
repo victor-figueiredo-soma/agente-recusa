@@ -11,6 +11,10 @@ _SCOPES = ["https://graph.microsoft.com/.default"]
 
 _msal_app: msal.ConfidentialClientApplication | None = None
 
+# Sessão única reaproveitada entre chamadas — mantém a conexão TLS viva
+# (keep-alive) e o pool de conexões. São 5+ chamadas ao Graph por e-mail.
+_session = requests.Session()
+
 
 def _get_msal_app() -> msal.ConfidentialClientApplication:
     global _msal_app
@@ -39,7 +43,7 @@ def get_message(message_id: str) -> dict:
     user_id = os.environ["MAILBOX_USER_ID"]
     select = "id,conversationId,subject,body,from,toRecipients,ccRecipients,receivedDateTime"
     url = f"{_GRAPH_BASE}/users/{user_id}/messages/{message_id}?$select={select}"
-    resp = requests.get(url, headers=_headers(), timeout=15)
+    resp = _session.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     return resp.json()
 
@@ -48,7 +52,7 @@ def get_message(message_id: str) -> dict:
 def get_conversation_messages(
     conversation_id: str,
     exclude_id: str | None = None,
-    top: int = 25,
+    top: int | None = None,
     max_fetch: int = 200,
 ) -> list[dict]:
     """Retorna as mensagens da thread (mais recentes primeiro), excluindo `exclude_id`.
@@ -57,7 +61,11 @@ def get_conversation_messages(
     ("restriction or sort order is too complex"). Por isso buscamos a conversa
     inteira — paginando o @odata.nextLink — e ordenamos em memória. Sem isso, um
     $top pequeno traria um subconjunto arbitrário (não as mais recentes) e
-    mensagens da thread sumiriam. `max_fetch` é um teto de segurança."""
+    mensagens da thread sumiriam.
+
+    `top=None` (padrão) retorna TODO o histórico, sem limite de mais recentes —
+    o agente leva todo o contexto disponível da thread. `max_fetch` permanece
+    como teto de segurança contra conversas patologicamente grandes."""
     user_id = os.environ["MAILBOX_USER_ID"]
     url = f"{_GRAPH_BASE}/users/{user_id}/messages"
     params: dict | None = {
@@ -68,7 +76,7 @@ def get_conversation_messages(
 
     messages: list[dict] = []
     while url and len(messages) < max_fetch:
-        resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+        resp = _session.get(url, headers=_headers(), params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         messages.extend(data.get("value", []))
@@ -82,7 +90,7 @@ def get_conversation_messages(
 
 
 def _list_subscriptions() -> list[dict]:
-    resp = requests.get(f"{_GRAPH_BASE}/subscriptions", headers=_headers(), timeout=15)
+    resp = _session.get(f"{_GRAPH_BASE}/subscriptions", headers=_headers(), timeout=15)
     resp.raise_for_status()
     return resp.json().get("value", [])
 
@@ -90,7 +98,7 @@ def _list_subscriptions() -> list[dict]:
 def get_subscription(subscription_id: str) -> dict | None:
     """Retorna a subscription do Graph, ou None se não existir mais (404).
     Usado pelo watchdog para detectar subscription ausente/expirada."""
-    resp = requests.get(
+    resp = _session.get(
         f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
         headers=_headers(),
         timeout=15,
@@ -102,7 +110,7 @@ def get_subscription(subscription_id: str) -> dict | None:
 
 
 def _delete_subscription(subscription_id: str) -> None:
-    resp = requests.delete(
+    resp = _session.delete(
         f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
         headers=_headers(),
         timeout=15,
@@ -141,7 +149,7 @@ def create_subscription(notification_url: str) -> str:
         "expirationDateTime": _expiration_datetime(),
         "clientState": os.environ["WEBHOOK_CLIENT_STATE"],
     }
-    resp = requests.post(
+    resp = _session.post(
         f"{_GRAPH_BASE}/subscriptions",
         json=payload,
         headers=_headers(),
@@ -157,7 +165,7 @@ def create_subscription(notification_url: str) -> str:
 
 def renew_subscription(subscription_id: str) -> None:
     payload = {"expirationDateTime": _expiration_datetime()}
-    resp = requests.patch(
+    resp = _session.patch(
         f"{_GRAPH_BASE}/subscriptions/{subscription_id}",
         json=payload,
         headers=_headers(),
@@ -175,7 +183,7 @@ def send_reply(message_id: str, body_html: str) -> None:
 
     # 1. Criar draft de reply
     create_url = f"{_GRAPH_BASE}/users/{user_id}/messages/{message_id}/createReply"
-    resp = requests.post(create_url, headers=_headers(), timeout=15)
+    resp = _session.post(create_url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     draft_id = resp.json()["id"]
 
@@ -187,12 +195,12 @@ def send_reply(message_id: str, body_html: str) -> None:
         "bccRecipients": [],
         "body": {"contentType": "HTML", "content": body_html},
     }
-    resp = requests.patch(patch_url, json=patch_payload, headers=_headers(), timeout=15)
+    resp = _session.patch(patch_url, json=patch_payload, headers=_headers(), timeout=15)
     resp.raise_for_status()
 
     # 3. Enviar
     send_url = f"{_GRAPH_BASE}/users/{user_id}/messages/{draft_id}/send"
-    resp = requests.post(send_url, headers=_headers(), timeout=15)
+    resp = _session.post(send_url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     logger.info(f"Reply enviado para {notification_email} (thread de {message_id})")
 
@@ -210,7 +218,7 @@ def send_alert_mail(to: str, subject: str, body_html: str) -> None:
         },
         "saveToSentItems": False,
     }
-    resp = requests.post(
+    resp = _session.post(
         f"{_GRAPH_BASE}/users/{user_id}/sendMail",
         json=payload,
         headers=_headers(),
