@@ -48,19 +48,33 @@ def get_message(message_id: str) -> dict:
 def get_conversation_messages(
     conversation_id: str,
     exclude_id: str | None = None,
-    top: int = 5,
+    top: int = 25,
+    max_fetch: int = 200,
 ) -> list[dict]:
-    """Retorna as últimas `top` mensagens da thread, excluindo `exclude_id`."""
+    """Retorna as mensagens da thread (mais recentes primeiro), excluindo `exclude_id`.
+
+    O Graph NÃO permite combinar $filter em conversationId com $orderby
+    ("restriction or sort order is too complex"). Por isso buscamos a conversa
+    inteira — paginando o @odata.nextLink — e ordenamos em memória. Sem isso, um
+    $top pequeno traria um subconjunto arbitrário (não as mais recentes) e
+    mensagens da thread sumiriam. `max_fetch` é um teto de segurança."""
     user_id = os.environ["MAILBOX_USER_ID"]
-    params = {
-        "$filter": f"conversationId eq '{conversation_id}'",
-        "$top": str(top + (1 if exclude_id else 0)),
-        "$select": "id,subject,body,from,receivedDateTime",
-    }
     url = f"{_GRAPH_BASE}/users/{user_id}/messages"
-    resp = requests.get(url, headers=_headers(), params=params, timeout=15)
-    resp.raise_for_status()
-    messages = resp.json().get("value", [])
+    params: dict | None = {
+        "$filter": f"conversationId eq '{conversation_id}'",
+        "$select": "id,subject,body,from,receivedDateTime",
+        "$top": "100",  # tamanho de página (não é o limite final) — reduz round-trips
+    }
+
+    messages: list[dict] = []
+    while url and len(messages) < max_fetch:
+        resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        messages.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")  # None quando acabam as páginas
+        params = None  # o nextLink já carrega os parâmetros da query
+
     if exclude_id:
         messages = [m for m in messages if m.get("id") != exclude_id]
     messages.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)

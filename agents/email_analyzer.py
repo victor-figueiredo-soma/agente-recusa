@@ -23,6 +23,40 @@ def _strip_html(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+
+# Limite de caracteres do corpo completo (com citações) enviado no fallback —
+# evita custo/contexto excessivo em cadeias muito longas de encaminhamento.
+_MAX_BODY_CHARS = 10_000
+
+# Indícios de que o texto contém a notificação da transportadora (e não só uma
+# resposta curta tipo "favor verificar").
+_CARRIER_MARKERS = (
+    "nota fiscal", "nf ", "notas fiscais", "cte", "ct-e", "conhecimento",
+    "pendente", "pendência", "pendencia", "ocorrência", "ocorrencia", "awb",
+)
+
+
+def _has_carrier_signal(text: str) -> bool:
+    if len(text) < 150:  # curto demais para ser uma notificação de pendência
+        return False
+    low = text.lower()
+    return any(m in low for m in _CARRIER_MARKERS)
+
+
+def _body_for_analysis(raw_html: str) -> str:
+    """Corpo a enviar ao Gemini.
+
+    Prefere o texto SEM citação (a mensagem nova) — comportamento ideal para
+    e-mails diretos da transportadora. Mas se esse texto for curto demais ou não
+    tiver indícios de notificação (NF/CT-e/ocorrência), faz fallback para o corpo
+    COMPLETO com citações: é o caso das pendências encaminhadas/respondidas, em que
+    a notificação original (NF, CT-e, motivo) só existe no trecho citado."""
+    dequoted = _strip_html(_strip_quoted_html(raw_html))
+    if _has_carrier_signal(dequoted):
+        return dequoted
+    return _strip_html(raw_html)[:_MAX_BODY_CHARS]
+
+
 logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = """
@@ -222,7 +256,7 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
         f"Assunto: {payload.subject}\n"
         f"Remetente: {payload.fromName or ''} <{payload.from_email}>\n"
         f"Data: {payload.receivedDateTime}\n\n"
-        f"Corpo:\n{_strip_html(_strip_quoted_html(payload.body))}"
+        f"Corpo:\n{_body_for_analysis(payload.body)}"
     )
 
     if thread_history:
@@ -230,11 +264,13 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
         for i, msg in enumerate(thread_history, 1):
             addr = msg.get("from", {}).get("emailAddress", {})
             sender = f"{addr.get('name', '')} <{addr.get('address', '')}>".strip()
-            snippet = _strip_html(msg.get("body", {}).get("content", ""))[:300]
+            # _strip_quoted_html antes do _strip_html: remove a thread citada que
+            # cada reply arrasta, evitando duplicar todo o histórico por mensagem.
+            corpo = _strip_html(_strip_quoted_html(msg.get("body", {}).get("content", "")))
             lines.append(
                 f"\n[{i}] De: {sender} | Data: {msg.get('receivedDateTime', '')}\n"
                 f"    Assunto: {msg.get('subject', '')}\n"
-                f"    Corpo: {snippet}{'...' if len(snippet) == 300 else ''}"
+                f"    Corpo: {corpo}"
             )
         user_message += "\n".join(lines)
 
