@@ -31,6 +31,14 @@ SUBMOTIVOS: tuple[str, ...] = (
 
 SUBMOTIVO_FALLBACK = "PENDENTE"
 
+# Status canônicos (categoria-pai). O Gemini não garante casing/acento na saída;
+# normalizar para estas formas mantém a coluna STATUS do BQ e a lógica do e-mail
+# consistentes (uma comparação exata como `status == "RETENÇÃO FISCAL"` quebrava
+# silenciosamente quando vinha "Retenção fiscal").
+STATUS_RECUSA = "RECUSA"
+STATUS_RETENCAO = "RETENÇÃO FISCAL"
+STATUS_EXTRAVIO = "EXTRAVIO"
+
 
 class EmailPayload(BaseModel):
     subject: str
@@ -61,6 +69,24 @@ class AnalysisResult(BaseModel):
             return None
         valid = [nf.strip() for nf in v.split(",") if re.fullmatch(r"\d{7}", nf.strip())]
         return ", ".join(valid) if valid else None
+
+    @field_validator("status")
+    @classmethod
+    def normalize_status(cls, v: Optional[str]) -> Optional[str]:
+        """Canoniza o status para uma forma fixa (RECUSA / RETENÇÃO FISCAL / EXTRAVIO).
+        O Gemini varia casing/acento; sem isso, comparações exatas (texto do e-mail) e
+        filtros no BQ por STATUS quebram silenciosamente. Valor inesperado é mantido em
+        maiúscula (não forçado), para não mascarar uma classificação fora do esperado."""
+        if v is None:
+            return None
+        s = v.strip().upper()
+        if s in ("RETENÇÃO FISCAL", "RETENCAO FISCAL"):
+            return STATUS_RETENCAO
+        if s == STATUS_EXTRAVIO:
+            return STATUS_EXTRAVIO
+        if s == STATUS_RECUSA:
+            return STATUS_RECUSA
+        return s
 
     @field_validator("sub_motivo")
     @classmethod
