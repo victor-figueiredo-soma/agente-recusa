@@ -347,25 +347,31 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
             continue
 
         nf_label = nf or "não identificada"
+
+        # Garante o chamado no BQ INDEPENDENTEMENTE do tipo de interação do Sheets.
+        # O insert_chamado_if_absent dedup por NF no próprio BQ: se a NF já existe é
+        # no-op; se está faltando (ex.: chamado já criado no Sheets mas ausente do BQ,
+        # caso de registros anteriores à migração), é inserido mesmo assim. A gravação
+        # no BQ não pode ficar refém da classificação do Sheets.
+        try:
+            bq_client.insert_chamado_if_absent(
+                status=analysis.status or "RECUSA",
+                sub_motivo=analysis.sub_motivo or "PENDENTE",
+                nota_fiscal=nf,
+                thread_id=payload.conversationId,
+            )
+        except Exception as e:
+            # ERROR (não warning): falha de gravação do chamado é perda de dado
+            # operacional — precisa ser visível para alerta/monitoramento, não mascarada.
+            logger.error(
+                f"Falha ao registrar chamado no BigQuery — NF {nf}, "
+                f"msg {message_id}, conversa {payload.conversationId}: {e}",
+                exc_info=True,
+            )
+
+        # Categorização da notificação à logística (separada da gravação no BQ).
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
-            try:
-                bq_client.insert_chamado_if_absent(
-                    status=analysis.status or "RECUSA",
-                    sub_motivo=analysis.sub_motivo or "PENDENTE",
-                    nota_fiscal=nf,
-                    thread_id=payload.conversationId,
-                )
-            except Exception as e:
-                # ERROR (não warning): falha de gravação do chamado é perda de dado
-                # operacional — precisa ser visível para alerta/monitoramento, não
-                # mascarada. Mantém o processamento dos demais passos (o aviso à
-                # logística ainda deve seguir), mas registra com contexto e stack.
-                logger.error(
-                    f"Falha ao registrar chamado no BigQuery — NF {nf}, "
-                    f"msg {message_id}, conversa {payload.conversationId}: {e}",
-                    exc_info=True,
-                )
         elif tipo_interacao == "reiteracao_outra_thread":
             ja_registradas.append(nf_label)
         # reiteracao_mesma_thread → ignora silenciosamente
