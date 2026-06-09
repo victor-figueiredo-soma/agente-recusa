@@ -5,7 +5,7 @@ import json
 import threading
 from google import genai
 from google.genai import types
-from models.schemas import EmailPayload, AnalysisResult
+from models.schemas import EmailPayload, AnalysisResult, SUBMOTIVOS, SUBMOTIVO_FALLBACK
 from utils.logger import get_logger
 from utils.retry import transient_retry
 
@@ -74,6 +74,10 @@ def _body_for_analysis(raw_html: str) -> str:
 
 
 logger = get_logger(__name__)
+
+# Lista formatada para injetar no prompt (uma categoria por linha). Mantém o prompt
+# sincronizado com a fonte única SUBMOTIVOS de schemas.py.
+_SUBMOTIVOS_TEXT = "\n".join(f"    - {s}" for s in SUBMOTIVOS)
 
 _SYSTEM_PROMPT = """
 Você é um especialista em logística e operações comerciais do setor de moda multimarcas.
@@ -207,11 +211,40 @@ PASSO 4 — Extrair a Nota Fiscal (obrigatório para is_recusa = true)
     e devem ser ignorados (ex: "123456" ou "12345678" → ignorar)
   - Se nenhuma NF for identificada → nota_fiscal = null → is_recusa = false (regra absoluta)
 
-PASSO 5 — Extrair o motivo da recusa
+PASSO 5 — Extrair o motivo da recusa (descrição livre)
   - Normalizar código de ocorrência ou linguagem livre para descrição clara e objetiva
     (ex: "311-PEDIDO CANCELADO" → "Pedido cancelado";
          "não recebeu devido a desconto comercial" → "Desconto comercial")
   - Se is_recusa = false → motivo_recusa = null
+
+PASSO 5B — Classificar o SUB-MOTIVO padronizado (obrigatório quando is_recusa = true)
+  Enquadre a ocorrência em EXATAMENTE UMA das categorias padronizadas abaixo. O valor
+  deve ser retornado em CAIXA ALTA, idêntico à lista (com underscores), sem inventar
+  variações. Esta categoria é controlada e alimenta a deduplicação — não improvise.
+
+  Categorias permitidas (sub_motivo):
+__SUBMOTIVOS_LIST__
+
+  Orientação de mapeamento (exemplos, não exaustivo):
+  - "PEDIDO CANCELADO" / código 311 → PEDIDO_CANCELADO
+  - "ESTABELECIMENTO FECHADO" / loja fechada → ESTABELECIMENTO_FECHADO
+  - mudança de endereço do destinatário → MUDOU_DE_ENDERECO
+  - transportadora não atende a região → TRANSPORTADORA_NAO_ATENDE_REGIAO
+  - fora do prazo de entrega / prazo expirado → FORA_DO_PRAZO
+  - grade/produto quebrado ou danificado → GRADE_QUEBRADA
+  - caixa lacrada com falta de peça → FALTA_PECA_CAIXA_LACRADA
+  - caixa avariada com falta de peça → FALTA_PECA_CAIXA_COM_AVARIA
+  - extravio total da carga → EXTRAVIO_TOTAL ; extravio de parte → EXTRAVIO_PARCIAL
+  - sobra de volume → SOBRA_DE_VOLUME ; troca de volume → TROCA_DE_VOLUME
+  - faturado para CNPJ errado → FATURADO_PARA_CNPJ_INCORRETO
+  - retenção/aguardando ICMS antecipado → AGUARDANDO_PGTO_ICMS_ANTECIPADO
+  - acordo comercial / desconto comercial → ACORDO_COMERCIAL
+  - promoção do site → PROMOCAO_DO_SITE
+  - valor de recebimento alto → VALOR_DE_RECEBIMENTO_ALTO
+  - entrega de fato realizada → ENTREGA_REALIZADA
+  - REGRA FIXA: sempre que status = "RETENÇÃO FISCAL" → sub_motivo = AGUARDANDO_PGTO_ICMS_ANTECIPADO
+  - SE NÃO HOUVER ENQUADRAMENTO CLARO → __FALLBACK__
+  - Se is_recusa = false → sub_motivo = null
 
 PASSO 6 — Considerar o histórico da thread (quando fornecido)
   - O campo "HISTÓRICO DA THREAD" contém mensagens anteriores em ordem cronológica
@@ -253,11 +286,12 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
   "transportadora": "<nome normalizado da transportadora, ou null se não identificado>",
   "nota_fiscal": "<7 primeiros dígitos da(s) NF(s), separados por vírgula se houver mais de uma, ou null se não identificado>",
   "motivo_recusa": "<motivo da não-entrega em linguagem clara e objetiva, ou null se não for recusa>",
+  "sub_motivo": "<UMA das categorias padronizadas em CAIXA ALTA (PASSO 5B), ou null se is_recusa = false>",
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>",
   "tipo_mensagem": "<'padrao_automatico' ou 'mensagem_livre'>",
   "status": "<'RECUSA', 'RETENÇÃO FISCAL' ou 'EXTRAVIO', ou null se is_recusa = false>"
 }
-"""
+""".replace("__SUBMOTIVOS_LIST__", _SUBMOTIVOS_TEXT).replace("__FALLBACK__", SUBMOTIVO_FALLBACK)
 
 
 @transient_retry
@@ -308,21 +342,14 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
     logger.info(f"Analisando email: '{payload.subject}' de {payload.from_email}")
     logger.info(f"Conteúdo enviado ao Gemini:\n{user_message[:1000]}")
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=user_message,
-        config=types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
-            temperature=0.1,
-            response_mime_type="application/json",
-        ),
-    )
+    response = _generate(client, model_name, user_message)
 
     raw = response.text.strip()
     logger.info(f"Resposta Gemini: {raw}")
 
     try:
-        from utils import pricing, supabase_client
+        from utils import pricing
+        from agents import bq_client
         usage = response.usage_metadata
         if usage:
             events = pricing.gemini_cost_brl(
@@ -331,9 +358,9 @@ def analyze_email(payload: EmailPayload, thread_history: list[dict] | None = Non
                 output_tokens=usage.candidates_token_count or 0,
             )
             for event in events:
-                supabase_client.insert_usage_event(
+                bq_client.insert_usage_event(
                     origem="gemini",
-                    email_id=payload.messageId,
+                    thread_id=payload.conversationId,
                     **event,
                 )
     except Exception as e:

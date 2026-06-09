@@ -213,18 +213,27 @@ async def _dispatch_message(message_id: str) -> None:
 
 def _process_message(message_id: str) -> None:
     start_time = time.monotonic()
+    # Preenchido pelo inner assim que a thread é conhecida (após os filtros). Permite
+    # contabilizar o Railway com o id da THREAD; cai no message_id apenas se o inner
+    # sair antes de identificar a thread (falha ao buscar a mensagem ou e-mail filtrado),
+    # casos em que não queremos marcar nenhuma thread como processada.
+    ctx: dict[str, str | None] = {"thread_id": None}
     try:
-        _process_message_inner(message_id)
+        _process_message_inner(message_id, ctx)
     finally:
         try:
-            from utils import pricing, supabase_client
+            from utils import pricing
             event = pricing.railway_cost_brl(time.monotonic() - start_time)
-            supabase_client.insert_usage_event(origem="railway", email_id=message_id, **event)
+            bq_client.insert_usage_event(
+                origem="railway",
+                thread_id=ctx["thread_id"] or message_id,
+                **event,
+            )
         except Exception as e:
             logger.warning(f"Falha ao registrar custo Railway: {e}")
 
 
-def _process_message_inner(message_id: str) -> None:
+def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
     try:
         msg = graph_client.get_message(message_id)
     except Exception as e:
@@ -263,6 +272,20 @@ def _process_message_inner(message_id: str) -> None:
         "conversationId": msg.get("conversationId", ""),
     })
 
+    if ctx is not None:
+        ctx["thread_id"] = payload.conversationId
+
+    # Idempotência por THREAD: olhamos cada conversa uma única vez. Se o id da thread
+    # já está na tabela de custos, ela já foi processada — pula, evitando custo de
+    # Gemini/BQ duplicado e chamado repetido por reenvio/continuidade na mesma thread.
+    # Fail-open: se a checagem falhar, processa mesmo assim.
+    try:
+        if bq_client.thread_already_processed(payload.conversationId):
+            logger.info(f"Thread {payload.conversationId} já processada — email {payload.messageId} ignorado")
+            return
+    except Exception as e:
+        logger.warning(f"Falha ao checar idempotência da thread {payload.conversationId}: {e} — processando mesmo assim")
+
     try:
         thread_history = graph_client.get_conversation_messages(
             payload.conversationId, exclude_id=payload.messageId
@@ -298,7 +321,7 @@ def _process_message_inner(message_id: str) -> None:
     for nf in nfs:
         if nf:
             try:
-                if not bq_client.is_nf_atacado(nf, email_id=payload.messageId):
+                if not bq_client.is_nf_atacado(nf, thread_id=payload.conversationId):
                     logger.info(f"NF {nf} não é do Atacado — ignorada")
                     continue
             except Exception as e:
@@ -327,15 +350,22 @@ def _process_message_inner(message_id: str) -> None:
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
             try:
-                from utils import supabase_client
-                supabase_client.insert_chamado(
+                bq_client.insert_chamado_if_absent(
                     status=analysis.status or "RECUSA",
-                    motivo=analysis.motivo_recusa,
+                    sub_motivo=analysis.sub_motivo or "PENDENTE",
                     nota_fiscal=nf,
-                    email_id=payload.messageId,
+                    thread_id=payload.conversationId,
                 )
             except Exception as e:
-                logger.warning(f"Falha ao registrar chamado no Supabase: {e}")
+                # ERROR (não warning): falha de gravação do chamado é perda de dado
+                # operacional — precisa ser visível para alerta/monitoramento, não
+                # mascarada. Mantém o processamento dos demais passos (o aviso à
+                # logística ainda deve seguir), mas registra com contexto e stack.
+                logger.error(
+                    f"Falha ao registrar chamado no BigQuery — NF {nf}, "
+                    f"msg {message_id}, conversa {payload.conversationId}: {e}",
+                    exc_info=True,
+                )
         elif tipo_interacao == "reiteracao_outra_thread":
             ja_registradas.append(nf_label)
         # reiteracao_mesma_thread → ignora silenciosamente
