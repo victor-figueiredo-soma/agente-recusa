@@ -82,6 +82,7 @@ def insert_chamado_if_absent(
     sub_motivo: str | None,
     nota_fiscal: str | None,
     thread_id: str | None = None,
+    situacao: str = "Chamado Criado",
 ) -> bool:
     """Insere o chamado apenas se a NF ainda não existir na tabela (dedup por NF).
 
@@ -89,16 +90,20 @@ def insert_chamado_if_absent(
     armazena o sub-motivo PADRONIZADO (ver SUBMOTIVOS em models/schemas.py) e a coluna
     STATUS a categoria-pai, mas eles NÃO entram na chave de dedup.
 
+    `situacao` é o valor gravado na coluna SITUACAO quando a linha é de fato inserida:
+    "Chamado Criado" (NF nova no Sheets) ou "Chamado já existente" (NF já constava no
+    Sheets, mas estava ausente do BQ). O chamador decide com base no tipo de interação.
+
     Usa um único DML atômico (INSERT ... SELECT ... WHERE NOT EXISTS), que evita o atraso
     do streaming buffer e resolve dedup + gravação em uma só query.
 
-    Retorna True se inseriu (Chamado Criado) ou False se a NF já existia (Chamado já Criado).
+    Retorna True se inseriu ou False se a NF já existia no BQ (no-op).
     """
     client = _get_client()
     query = f"""
         INSERT INTO `{_CHAMADOS_TABLE}`
             (DATA, ID_EMAIL, NF, STATUS, MOTIVO, SITUACAO)
-        SELECT CURRENT_TIMESTAMP(), @thread_id, @nf, @status, @motivo, 'Chamado Criado'
+        SELECT CURRENT_TIMESTAMP(), @thread_id, @nf, @status, @motivo, @situacao
         FROM (SELECT 1)
         WHERE NOT EXISTS (
             SELECT 1 FROM `{_CHAMADOS_TABLE}` WHERE NF = @nf
@@ -110,6 +115,7 @@ def insert_chamado_if_absent(
             bigquery.ScalarQueryParameter("nf", "STRING", nota_fiscal),
             bigquery.ScalarQueryParameter("status", "STRING", status),
             bigquery.ScalarQueryParameter("motivo", "STRING", sub_motivo),
+            bigquery.ScalarQueryParameter("situacao", "STRING", situacao),
         ]
     )
     job = client.query(query, job_config=job_config)
@@ -117,7 +123,7 @@ def insert_chamado_if_absent(
     inserido = (job.num_dml_affected_rows or 0) > 0
     logger.info(
         f"BigQuery chamados — NF {nota_fiscal} / {status} / {sub_motivo}: "
-        f"{'Chamado Criado' if inserido else 'Chamado já Criado'}"
+        f"{f'inserido ({situacao})' if inserido else 'NF já existente no BQ — no-op'}"
     )
     return inserido
 

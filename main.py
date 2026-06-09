@@ -353,12 +353,16 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
         # no-op; se está faltando (ex.: chamado já criado no Sheets mas ausente do BQ,
         # caso de registros anteriores à migração), é inserido mesmo assim. A gravação
         # no BQ não pode ficar refém da classificação do Sheets.
+        # SITUACAO reflete se a NF já constava no Sheets: "primeira" → recém-criada;
+        # qualquer reiteração → a NF já existia no Sheets ("Chamado já existente").
+        situacao = "Chamado Criado" if tipo_interacao == "primeira" else "Chamado já existente"
         try:
             bq_client.insert_chamado_if_absent(
                 status=analysis.status or "RECUSA",
                 sub_motivo=analysis.sub_motivo or "PENDENTE",
                 nota_fiscal=nf,
                 thread_id=payload.conversationId,
+                situacao=situacao,
             )
         except Exception as e:
             # ERROR (não warning): falha de gravação do chamado é perda de dado
