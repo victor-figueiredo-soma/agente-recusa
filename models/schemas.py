@@ -74,12 +74,16 @@ class AnalysisResult(BaseModel):
     @classmethod
     def normalize_status(cls, v: Optional[str]) -> Optional[str]:
         """Canoniza o status para uma forma fixa (RECUSA / RETENÇÃO FISCAL / EXTRAVIO).
-        O Gemini varia casing/acento; sem isso, comparações exatas (texto do e-mail) e
-        filtros no BQ por STATUS quebram silenciosamente. Valor inesperado é mantido em
-        maiúscula (não forçado), para não mascarar uma classificação fora do esperado."""
+        O Gemini varia casing/acento/separador; sem isso, comparações exatas (texto do
+        e-mail) e filtros no BQ por STATUS quebram silenciosamente. Em especial, o Gemini
+        às vezes devolve "RETENÇÃO_FISCAL" (underscore, contaminado pelo formato dos
+        sub_motivos): a coluna STATUS do BQ deve gravar SEMPRE "RETENÇÃO FISCAL" (espaço),
+        então colapsamos espaços/underscores antes de comparar. Valor inesperado é mantido
+        em maiúscula (não forçado), para não mascarar classificação fora do esperado."""
         if v is None:
             return None
-        s = v.strip().upper()
+        # Colapsa espaços e underscores num único espaço → padroniza o STATUS gravado no BQ.
+        s = re.sub(r"[\s_]+", " ", v.strip().upper())
         if s in ("RETENÇÃO FISCAL", "RETENCAO FISCAL"):
             return STATUS_RETENCAO
         if s == STATUS_EXTRAVIO:
