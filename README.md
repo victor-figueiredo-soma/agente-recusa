@@ -93,7 +93,7 @@ agente-recusa/
 
 ## Configuração
 
-Toda a configuração é feita por **variáveis de ambiente**. Copie [.env.example](.env.example) para `.env` e preencha os valores — o arquivo documenta cada variável (credenciais do Gemini, Google Sheets, BigQuery e Microsoft Graph, além dos parâmetros de custo).
+Toda a configuração é feita por **variáveis de ambiente**, definidas no painel do **Railway** (Service → Variables). O arquivo [.env.example](.env.example) serve como referência das variáveis necessárias e do que cada uma representa (credenciais do Gemini, Google Sheets, BigQuery e Microsoft Graph, além dos parâmetros de custo).
 
 As variáveis que determinam **para onde a automação aponta** — as que você provavelmente vai ajustar a cada ambiente — são:
 
