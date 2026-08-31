@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from models.schemas import EmailPayload, ProcessedEmail, GraphNotificationPayload
 from agents.email_analyzer import analyze_email
 from agents.sheet_writer import write_to_sheet
-from agents import graph_client, bq_client
+from agents import graph_client, bq_client, wisereturn_client
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -119,6 +119,10 @@ async def _create_subscription_deferred() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Aviso único por processo: sem a chave, nenhum BD é criado na WiseReturn e o
+    # restante do fluxo segue normal — sem este log a ausência passaria em branco.
+    if not wisereturn_client.habilitado():
+        logger.warning("WISERETURN_API_KEY ausente — nenhum BD será criado na WiseReturn")
     tasks = [
         asyncio.create_task(_create_subscription_deferred()),
         asyncio.create_task(_renewal_loop()),
@@ -137,7 +141,11 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "subscription_id": _subscription_id}
+    return {
+        "status": "ok",
+        "subscription_id": _subscription_id,
+        "wisereturn": "on" if wisereturn_client.habilitado() else "off",
+    }
 
 
 @app.get("/graph-webhook")
@@ -317,6 +325,8 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
 
     novos_chamados: list[str] = []
     ja_registradas: list[str] = []
+    # NF (label) -> desfecho do BD na WiseReturn, só para o e-mail de resumo.
+    bds_por_nf: dict[str, str] = {}
 
     for nf in nfs:
         if nf:
@@ -373,6 +383,32 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
                 exc_info=True,
             )
 
+        # --- WiseReturn: cria o Boletim de Devolução (BD) da NF ------------------
+        # DEPOIS de Sheets e BQ de propósito: o BD é o único efeito colateral
+        # EXTERNO (visível a analistas fora do time). Criá-lo antes do registro
+        # interno arriscaria um BD órfão quando o Sheets falha (o loop faz
+        # `continue` acima) — um analista receberia trabalho sem nenhum rastro
+        # nosso. Nesta ordem o pior caso é "registro interno existe, BD não":
+        # detectável (WARNING + linha no e-mail) e corrigível com um único POST,
+        # porque a API é idempotente.
+        # Chamamos também em REITERAÇÃO: a API deduplica sozinha ("Bd já criado
+        # para NF:X, numero do Bd:Y") e isso auto-cura a NF cujo BD falhou na 1ª
+        # tentativa — mesma doutrina do insert_chamado_if_absent acima.
+        # Falha aqui NUNCA aborta a NF: criar_bd não levanta exceção e o chamado
+        # interno já está gravado.
+        bd = wisereturn_client.criar_bd(
+            nota_fiscal=nf,
+            message=wisereturn_client.montar_message(
+                nota_fiscal=nf,
+                status=analysis.status or "RECUSA",
+                motivo_recusa=analysis.motivo_recusa,
+                sub_motivo=analysis.sub_motivo,
+                transportadora=analysis.transportadora,
+            ),
+        )
+        if not bd.desabilitado:
+            bds_por_nf[nf_label] = bd.resumo if bd.ok else f"NÃO criado — {bd.resumo}"
+
         # Categorização da notificação à logística (separada da gravação no BQ).
         if tipo_interacao == "primeira":
             novos_chamados.append(nf_label)
@@ -380,6 +416,9 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
             ja_registradas.append(nf_label)
         # reiteracao_mesma_thread → ignora silenciosamente
 
+    # Nada a notificar. Nota: se TODAS as NFs forem reiteracao_mesma_thread, a
+    # WiseReturn já foi chamada mas nenhum reply sai — é o caminho de mensagem
+    # duplicada, onde o BD já existe e o desfecho é "ja_existia" (não é bug).
     if not novos_chamados and not ja_registradas:
         return
 
@@ -429,10 +468,21 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
         ja_list = "".join(f"<li>NF {nf} — chamado já existente no Sheets</li>" for nf in ja_registradas)
         nf_items = f"<li><strong>Notas Fiscais:</strong><ul>{ja_list}</ul></li>"
 
+    # Desfecho do BD por NF. Fica no e-mail (e não em ERROR/alerta) de propósito:
+    # erro de negócio da WiseReturn é dado por-NF, e a logística já lê este resumo.
+    bd_items = ""
+    if bds_por_nf:
+        bd_list = "".join(f"<li>NF {nf} — {res}</li>" for nf, res in bds_por_nf.items())
+        bd_items = (
+            f"<li><strong>Boletim de Devolução (WiseReturn):</strong>"
+            f"<ul>{bd_list}</ul></li>"
+        )
+
     body_html = (
         f"<p>{header_text}</p>"
         f"<ul>"
         f"{nf_items}"
+        f"{bd_items}"
         f"<li><strong>Transportadora:</strong> {transportadora}</li>"
         f"<li><strong>Motivo:</strong> {motivo}</li>"
         f"<li><strong>Data de recebimento:</strong> {data_sp}</li>"

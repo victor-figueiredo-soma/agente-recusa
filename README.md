@@ -1,6 +1,6 @@
 # Agente de Recusa — Atacado
 
-Automação que monitora uma caixa de e-mail corporativa, identifica **notificações de não-entrega de transportadoras** (recusa, retenção fiscal ou extravio) usando IA e, para cada Nota Fiscal do Atacado afetada, abre um chamado — registrando em planilha e BigQuery e notificando a equipe de logística por e-mail, tudo sem intervenção manual.
+Automação que monitora uma caixa de e-mail corporativa, identifica **notificações de não-entrega de transportadoras** (recusa, retenção fiscal ou extravio) usando IA e, para cada Nota Fiscal do Atacado afetada, abre um chamado — registrando em planilha e BigQuery, criando o **Boletim de Devolução (BD) na WiseReturn** e notificando a equipe de logística por e-mail, tudo sem intervenção manual.
 
 ---
 
@@ -15,7 +15,8 @@ Este agente automatiza esse fluxo de ponta a ponta:
 - **Extrai** a(s) Nota(s) Fiscal(is), transportadora, motivo e sub-motivo padronizado.
 - **Valida** se a NF pertence ao Atacado (consulta ao BigQuery), descartando as de Varejo.
 - **Registra** o chamado na planilha do Google Sheets e na tabela de chamados do BigQuery, com deduplicação por NF e por thread.
-- **Notifica** a equipe de logística por e-mail (resposta na própria thread) resumindo os chamados criados.
+- **Abre o BD** na WiseReturn, que busca CNPJ, representante, transportadora e itens direto do ERP e cria o Boletim de Devolução com status `PENDENTE ANALISTA`.
+- **Notifica** a equipe de logística por e-mail (resposta na própria thread) resumindo os chamados criados e o desfecho de cada BD.
 - **Contabiliza** o custo de cada execução (Gemini + BigQuery + infraestrutura) para acompanhamento financeiro.
 
 ---
@@ -38,12 +39,12 @@ Este agente automatiza esse fluxo de ponta a ponta:
    │                                 │  d. valida NF (BigQuery) │
    │                                 └───────────┬─────────────┘
    │                                             │
-   ▼ e. grava chamado                            ▼ f. notifica
-┌────────────┐   ┌───────────────┐      ┌────────────────────┐
-│  Sheets    │   │  BigQuery      │      │ E-mail p/ logística │
-│ (chamados) │   │ (chamados +    │      │ (reply na thread)   │
-│            │   │  custos)       │      └────────────────────┘
-└────────────┘   └───────────────┘
+   ▼ e. grava chamado                  ▼ f. abre BD      ▼ g. notifica
+┌────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐
+│  Sheets    │  │  BigQuery     │  │  WiseReturn   │  │ E-mail p/ logística │
+│ (chamados) │  │ (chamados +   │  │ (Boletim de   │  │ (reply na thread)   │
+│            │  │  custos)      │  │  Devolução)   │  └────────────────────┘
+└────────────┘  └──────────────┘  └──────────────┘
 ```
 
 1. Um e-mail chega na caixa monitorada.
@@ -54,7 +55,8 @@ Este agente automatiza esse fluxo de ponta a ponta:
    - **Análise com IA** — o Gemini classifica o e-mail (`is_recusa`, transportadora, NF, motivo, sub-motivo, status, confiança), considerando o histórico da thread quando disponível.
    - **Validação de NF** — cada NF é conferida no BigQuery; NFs que não são do Atacado são descartadas.
    - **Registro** — o chamado é gravado no Google Sheets e na tabela de chamados do BigQuery (deduplicação por NF).
-   - **Notificação** — a equipe de logística recebe um e-mail-resumo respondendo à thread original.
+   - **Abertura do BD** — a NF é enviada à API da WiseReturn, que cria o Boletim de Devolução. É a **última** etapa de propósito: é o único efeito colateral externo ao time, então só acontece depois de o registro interno estar garantido. Uma falha aqui não interrompe o processamento da NF.
+   - **Notificação** — a equipe de logística recebe um e-mail-resumo respondendo à thread original, incluindo o número do BD (ou o motivo de não ter sido criado).
 
 A cada execução, os custos de Gemini, BigQuery e infraestrutura (Railway) são registrados na tabela de custos.
 
@@ -69,6 +71,7 @@ A cada execução, os custos de Gemini, BigQuery e infraestrutura (Railway) são
 | [agents/email_analyzer.py](agents/email_analyzer.py) | Análise do e-mail com o Gemini — limpeza do HTML, prompt especializado por transportadora e parsing do resultado. |
 | [agents/sheet_writer.py](agents/sheet_writer.py) | Gravação dos chamados no Google Sheets, com verificação de reiteração (mesma/outra thread). |
 | [agents/bq_client.py](agents/bq_client.py) | BigQuery: validação de NF do Atacado, gravação de chamados (dedup por NF), idempotência por thread e registro de custos. |
+| [agents/wisereturn_client.py](agents/wisereturn_client.py) | API WiseReturn: criação do Boletim de Devolução a partir da NF, com classificação do desfecho (criado / já existente / erro de negócio / auth / rede). |
 | [models/schemas.py](models/schemas.py) | Modelos Pydantic e as regras de negócio (sub-motivos padronizados, normalização de status). |
 | [utils/](utils/) | Logger, cálculo de custos (`pricing.py`) e política de *retry* transitório (`retry.py`). |
 
@@ -138,7 +141,7 @@ O deploy usa o [Dockerfile](Dockerfile) e o [railway.toml](railway.toml), com *h
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
-| `GET` | `/health` | Health check; retorna o status e o ID da *subscription* ativa. |
+| `GET` | `/health` | Health check; retorna o status, o ID da *subscription* ativa e se a integração WiseReturn está ligada (`"wisereturn": "on"｜"off"`). |
 | `GET` / `POST` | `/graph-webhook` | Endpoint do webhook: responde ao `validationToken` do Graph e recebe as *change notifications*. |
 | `POST` | `/subscriptions/renew` | Renovação manual da *subscription* (protegida por header `X-API-Key`). |
 
@@ -150,4 +153,6 @@ O deploy usa o [Dockerfile](Dockerfile) e o [railway.toml](railway.toml), com *h
 - **Idempotência em dois níveis** — por thread (cada conversa é vista uma vez) e por NF (uma NF gera no máximo um chamado), evitando chamados e custos duplicados.
 - **Retry transitório** — chamadas a Gemini, Graph, Sheets e BigQuery reexecutam automaticamente em falhas temporárias (429/5xx/timeout) com *backoff* exponencial.
 - **Rastreio de custos** — cada execução registra o consumo de Gemini (tokens), BigQuery (bytes processados) e infraestrutura na tabela de custos, em BRL.
+- **WiseReturn desacoplada** — a criação do BD é a última etapa e nunca aborta o processamento da NF: sem `WISERETURN_API_KEY` a integração é um *no-op* silencioso (visível em `/health`), e falhas viram `WARNING` + uma linha no e-mail de resumo. Só erro de autenticação dispara alerta, porque afeta todas as NFs.
+- **Reenvio seguro** — a chamada acontece também em reiteração: a API deduplica por NF (`"Bd já criado para NF:X"`), o que auto-cura uma NF cujo BD falhou na primeira tentativa. **Ressalva:** se a API falhar entre criar a capa do BD e inserir os itens, o reenvio cai em "Bd já criado" e os itens não entram — resulta num BD sem itens, que a API atual não permite detectar.
 ```

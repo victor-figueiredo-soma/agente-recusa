@@ -135,6 +135,48 @@ class ProcessedEmail(BaseModel):
     acao: str = "Chamado Recebido"
 
 
+class WiseReturnResult(BaseModel):
+    """Desfecho de UMA tentativa de criar o Boletim de Devolução (BD) na WiseReturn.
+
+    Nunca representa exceção: `wisereturn_client.criar_bd` sempre devolve um
+    resultado. Os flags são mutuamente exclusivos por construção — no máximo um
+    deles é True."""
+    criado: bool = False  # BD criado agora
+    ja_existia: bool = False  # BD já existia para a NF (idempotência da API)
+    numero_bd: Optional[str] = None
+    erro_auth: bool = False  # HTTP 401 — X-External-Key ausente/inválida
+    erro_rede: bool = False  # timeout/conexão/5xx após esgotar os retries
+    desabilitado: bool = False  # WISERETURN_API_KEY ausente (no-op)
+    mensagens: List[str] = Field(default_factory=list)  # array cru devolvido pela API
+
+    @property
+    def ok(self) -> bool:
+        """True quando EXISTE BD para a NF — criado agora ou já existente.
+        É o que interessa ao negócio; 'criado' vs 'ja_existia' é só narrativa."""
+        return self.criado or self.ja_existia
+
+    @property
+    def erro_negocio(self) -> bool:
+        """HTTP 200 com isOk=false que NÃO é "BD já criado": NF fora do ERP, NF
+        sem itens, cliente não localizado, falha ao criar a capa."""
+        return not (self.ok or self.erro_auth or self.erro_rede or self.desabilitado)
+
+    @property
+    def resumo(self) -> str:
+        """Frase curta para o e-mail de resumo à logística e para os logs."""
+        if self.desabilitado:
+            return "integração WiseReturn desabilitada"
+        if self.criado:
+            return f"BD {self.numero_bd or '?'} criado"
+        if self.ja_existia:
+            return f"BD {self.numero_bd or '?'} já existente"
+        if self.erro_auth:
+            return "falha de autenticação na WiseReturn"
+        if self.erro_rede:
+            return "WiseReturn indisponível"
+        return "; ".join(m for m in self.mensagens if m)[:300] or "erro desconhecido"
+
+
 # --- Microsoft Graph Change Notification schemas ---
 
 class GraphResourceData(BaseModel):
