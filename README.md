@@ -169,5 +169,4 @@ pytest -q
 - **Falhas isoladas** — um problema na criação do BD nunca interrompe o processamento da NF: o chamado já está gravado, e o desfecho aparece no log e no e-mail de resumo.
 - **Alerta por e-mail** — qualquer log de nível ERROR dispara e-mail para `ALERT_EMAIL`, com *throttle* para evitar repetição. Falhas que afetam apenas uma NF ficam em WARNING e são reportadas de forma agregada no resumo à logística.
 - **Rastreio de custos** — cada execução registra o consumo de Gemini (tokens), BigQuery (bytes) e infraestrutura na tabela de custos, em BRL.
-
-> **Atenção:** nunca rode duas instâncias do agente em paralelo apontando para caixas diferentes com o mesmo App Registration do Azure. Elas removem a *subscription* uma da outra e o agente para de receber e-mails silenciosamente.
+- **Instâncias isoladas** — a limpeza de *subscriptions* obsoletas filtra por `notificationUrl`, então cada instância só administra as próprias. Duas instâncias sob o mesmo App Registration do Azure (por exemplo produção e staging, ou agentes para caixas diferentes) coexistem sem se interferir.

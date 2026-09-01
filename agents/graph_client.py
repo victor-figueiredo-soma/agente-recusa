@@ -118,8 +118,26 @@ def _delete_subscription(subscription_id: str) -> None:
     resp.raise_for_status()
 
 
+def _mesma_url(a: str, b: str) -> bool:
+    """Compara notificationUrl ignorando barra final e diferenças de caixa."""
+    return (a or "").rstrip("/").lower() == (b or "").rstrip("/").lower()
+
+
 def cleanup_stale_subscriptions(notification_url: str) -> None:
-    """Deleta subscriptions que apontam para caixas diferentes da atual."""
+    """Deleta as subscriptions DESTA instância que apontam para outra caixa.
+
+    O filtro por notificationUrl é essencial, não cosmético. `GET /subscriptions`
+    com token de aplicativo devolve as subscriptions de TODO o App Registration,
+    não apenas as nossas. Sem comparar a URL, uma segunda instância que monitore
+    outra caixa (staging, um agente para outro setor) teria sua subscription
+    considerada "obsoleta" e deletada a cada startup e a cada ciclo do watchdog —
+    as duas instâncias se derrubariam mutuamente, em silêncio, e o sintoma
+    apareceria só como "o agente parou de receber e-mail".
+
+    Só é removida a subscription que é NOSSA (mesma notificationUrl) E aponta
+    para uma caixa diferente da configurada agora — o caso real de obsolescência,
+    que é troca de MAILBOX_USER_ID. Subscriptions de outras instâncias são
+    deixadas em paz, e a nossa da caixa correta é preservada."""
     user_id = os.environ["MAILBOX_USER_ID"]
     expected_resource = f"users/{user_id}/mailFolders/Inbox/messages"
     try:
@@ -130,6 +148,13 @@ def cleanup_stale_subscriptions(notification_url: str) -> None:
     for sub in subs:
         resource = sub.get("resource", "")
         sub_id = sub.get("id", "")
+        sub_url = sub.get("notificationUrl", "")
+        if not _mesma_url(sub_url, notification_url):
+            logger.info(
+                f"Subscription {sub_id} pertence a outra instância "
+                f"({sub_url}) — preservada"
+            )
+            continue
         if resource != expected_resource:
             try:
                 _delete_subscription(sub_id)
