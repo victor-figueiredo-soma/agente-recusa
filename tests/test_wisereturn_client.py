@@ -61,7 +61,7 @@ def test_bd_criado_isok_maiusculo(monkeypatch):
         {"message": "Produto:REF001, Cor:01, Tamanho:M, Quantidade:5, inserido no Bd:1042",
          "isOK": True},
     ]))
-    r = wr.criar_bd("123456", "motivo qualquer")
+    r = wr.criar_bd("123456", "1", "motivo qualquer")
     assert r.criado and r.ok
     assert r.numero_bd == "1042"
     assert not r.ja_existia
@@ -73,7 +73,7 @@ def test_bd_criado_isok_documentado(monkeypatch):
     _mock_post(monkeypatch, return_value=_FakeResp(200, [
         {"message": "Bd:1042, referente a Nf:123456, criado com sucesso.", "isOk": True},
     ]))
-    assert wr.criar_bd("123456", "motivo").criado
+    assert wr.criar_bd("123456", "1", "motivo").criado
 
 
 def test_bd_ja_criado_nao_e_falha(monkeypatch):
@@ -81,7 +81,7 @@ def test_bd_ja_criado_nao_e_falha(monkeypatch):
     _mock_post(monkeypatch, return_value=_FakeResp(200, [
         {"message": "Bd já criado para NF:123456, numero do Bd:1042", "isOK": False},
     ]))
-    r = wr.criar_bd("123456", "motivo qualquer")
+    r = wr.criar_bd("123456", "1", "motivo qualquer")
     assert r.ja_existia and r.ok
     assert r.numero_bd == "1042"
     assert not r.criado
@@ -92,7 +92,7 @@ def test_nf_nao_localizada(monkeypatch):
     _mock_post(monkeypatch, return_value=_FakeResp(200, [
         {"message": "NF:123456 não localizada no ERP.", "isOK": False},
     ]))
-    r = wr.criar_bd("123456", "motivo qualquer")
+    r = wr.criar_bd("123456", "1", "motivo qualquer")
     assert not r.ok
     assert r.erro_negocio
     assert "não localizada no ERP" in r.mensagens[0]
@@ -102,7 +102,7 @@ def test_mensagem_obrigatoria(monkeypatch):
     _mock_post(monkeypatch, return_value=_FakeResp(200, [
         {"message": "O campo Mensagem é obrigatório.", "isOK": False},
     ]))
-    r = wr.criar_bd("123456", "")
+    r = wr.criar_bd("123456", "1", "")
     assert r.erro_negocio and not r.ok
 
 
@@ -110,14 +110,14 @@ def test_cliente_nao_localizado(monkeypatch):
     _mock_post(monkeypatch, return_value=_FakeResp(200, [
         {"message": "Cliente cnpj:12345678000199 não localizado.", "isOK": False},
     ]))
-    assert wr.criar_bd("123456", "motivo").erro_negocio
+    assert wr.criar_bd("123456", "1", "motivo").erro_negocio
 
 
 # --- erros de transporte ------------------------------------------------------
 
 def test_401_nao_faz_retry(monkeypatch):
     post = _mock_post(monkeypatch, return_value=_FakeResp(401, [], text="Unauthorized"))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.erro_auth and not r.ok
     assert post.call_count == 1, "401 é config errada — retry só triplica a latência"
 
@@ -125,7 +125,7 @@ def test_401_nao_faz_retry(monkeypatch):
 def test_401_string_crua(monkeypatch):
     """A API real devolve uma string JSON no 401, não um objeto."""
     post = _mock_post(monkeypatch, return_value=_FakeResp(401, "API Key inválida."))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.erro_auth
     assert post.call_count == 1
 
@@ -137,16 +137,18 @@ def test_500_sem_envelope_faz_retry_e_vira_erro_rede(monkeypatch):
     o predicado de utils/retry.py só enxerga o status via exceção HTTPError.
     Corpo irreconhecível (HTML do App Service) = falha transitória de verdade."""
     post = _mock_post(monkeypatch, return_value=_FakeResp(500, None, text="<html>502</html>"))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.erro_rede and not r.ok
     assert post.call_count == 3
 
 
 def test_500_com_envelope_nao_faz_retry(monkeypatch):
-    """Comportamento REAL da NF não localizada: HTTP 500 + envelope de erro.
+    """5xx que traz o envelope da aplicação = erro determinado, não transitório.
 
-    É determinístico (verificado em 3 tentativas idênticas contra a API), então
-    tem que ser classificado como erro de negócio e NÃO retentado."""
+    A API não usa mais esse caminho (erros de negócio voltam 200), mas uma versão
+    anterior respondia assim para NF não localizada — de forma determinística.
+    O teste garante que um 5xx COM envelope não seja retentado nem confundido
+    com falha de rede, protegendo a discriminação feita em _post."""
     post = _mock_post(monkeypatch, return_value=_FakeResp(500, {
         "id": "A1",
         "messages": [{"id": "99", "text": "Ocorreram erros ao processar essa solicitacao.",
@@ -154,7 +156,7 @@ def test_500_com_envelope_nao_faz_retry(monkeypatch):
         "success": False,
         "url": "https://wisereturnapi-soma.azurewebsites.net/service.asmx/external/importacaoRecusa/bds",
     }))
-    r = wr.criar_bd("0000000", "motivo")
+    r = wr.criar_bd("0000000", "1", "motivo")
     assert r.erro_negocio and not r.ok
     assert not r.erro_rede
     assert post.call_count == 1, "500 determinístico não deve ser retentado"
@@ -165,7 +167,7 @@ def test_500_com_envelope_nao_faz_retry(monkeypatch):
 
 def test_timeout_vira_erro_rede(monkeypatch):
     post = _mock_post(monkeypatch, side_effect=requests.exceptions.Timeout("read timeout"))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.erro_rede and not r.ok
     assert post.call_count == 3
 
@@ -173,13 +175,13 @@ def test_timeout_vira_erro_rede(monkeypatch):
 def test_resposta_nao_json(monkeypatch):
     """O endpoint é /service.asmx/... e pode devolver HTML em erro de infra."""
     _mock_post(monkeypatch, return_value=_FakeResp(200, None, text="<html>502 Bad Gateway</html>"))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.erro_rede and not r.ok
 
 
 def test_criar_bd_nunca_levanta(monkeypatch):
     _mock_post(monkeypatch, side_effect=RuntimeError("boom"))
-    r = wr.criar_bd("123456", "motivo")  # não deve propagar
+    r = wr.criar_bd("123456", "1", "motivo")  # não deve propagar
     assert not r.ok and not r.erro_rede
 
 
@@ -188,7 +190,7 @@ def test_criar_bd_nunca_levanta(monkeypatch):
 def test_sem_chave_e_noop(monkeypatch):
     monkeypatch.delenv("WISERETURN_API_KEY", raising=False)
     post = _mock_post(monkeypatch, return_value=_FakeResp(200, []))
-    r = wr.criar_bd("123456", "motivo")
+    r = wr.criar_bd("123456", "1", "motivo")
     assert r.desabilitado
     assert post.call_count == 0, "sem chave não pode nem tocar na rede"
     assert not wr.habilitado()
@@ -196,9 +198,58 @@ def test_sem_chave_e_noop(monkeypatch):
 
 def test_nf_vazia_nao_chama_api(monkeypatch):
     post = _mock_post(monkeypatch, return_value=_FakeResp(200, []))
-    r = wr.criar_bd("", "motivo")
+    r = wr.criar_bd("", "1", "motivo")
     assert not r.ok
     assert post.call_count == 0
+
+
+# --- campo serie --------------------------------------------------------------
+
+def test_payload_inclui_serie(monkeypatch):
+    """O body precisa carregar `serie` — sem ele a API rejeita a chamada."""
+    post = _mock_post(monkeypatch, return_value=_FakeResp(200, [
+        {"message": "Bd:1042, referente a Nf:1720202, criado com sucesso.", "isOK": True},
+    ]))
+    wr.criar_bd("1720202", "72", "motivo")
+    enviado = post.call_args.kwargs["json"]
+    assert enviado == {"nf": "1720202", "serie": "72", "message": "motivo"}
+
+
+def test_serie_vazia_nao_chama_api(monkeypatch):
+    """Poupa o round-trip: a API responderia "O campo Serie é obrigatório."."""
+    post = _mock_post(monkeypatch, return_value=_FakeResp(200, []))
+    r = wr.criar_bd("1720202", "", "motivo")
+    assert not r.ok
+    assert post.call_count == 0
+
+
+def test_campo_serie_obrigatorio(monkeypatch):
+    _mock_post(monkeypatch, return_value=_FakeResp(200, [
+        {"message": "O campo Serie é obrigatório.", "isOK": False},
+    ]))
+    r = wr.criar_bd("1720202", "72", "motivo")
+    assert r.erro_negocio and not r.ok
+
+
+def test_campo_nf_obrigatorio(monkeypatch):
+    _mock_post(monkeypatch, return_value=_FakeResp(200, [
+        {"message": "O campo Nf é obrigatório.", "isOK": False},
+    ]))
+    assert wr.criar_bd("1720202", "72", "motivo").erro_negocio
+
+
+def test_nf_nao_localizada_agora_200(monkeypatch):
+    """Comportamento REAL atual: NF não localizada volta 200, não 500.
+
+    Tem que virar erro de NEGÓCIO — se caísse em erro_rede, o retry entraria e
+    gastaria 3 tentativas num resultado determinístico."""
+    post = _mock_post(monkeypatch, return_value=_FakeResp(200, [
+        {"message": "NF:0000000 não localizada no ERP.", "isOK": False,
+         "elapsed": [], "totalItems": 0},
+    ]))
+    r = wr.criar_bd("0000000", "1", "motivo")
+    assert r.erro_negocio and not r.erro_rede and not r.ok
+    assert post.call_count == 1
 
 
 # --- montar_message -----------------------------------------------------------

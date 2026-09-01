@@ -7,28 +7,13 @@ buscados automaticamente no ERP pela própria API — não precisamos informá-l
 PARTICULARIDADE DA API: erros de NEGÓCIO voltam no CORPO, não no status. Por isso
 este módulo NÃO usa raise_for_status() geral — ver _post().
 
-DIVERGÊNCIAS DA DOCUMENTAÇÃO, verificadas contra a API real em 27/08/2026 (o
-código segue a REALIDADE; a doc está desatualizada nestes três pontos):
+DIVERGÊNCIA DA DOCUMENTAÇÃO, verificada contra a API real: o campo de sucesso é
+`isOK` (K maiúsculo), não `isOk` como documentado na seção 6.1. Ler só `isOk`
+faria toda resposta de sucesso parecer falha — ver _item_ok().
 
-1. O campo de sucesso é `isOK` (K maiúsculo), não `isOk` como documentado.
-   Ler só `isOk` faria toda resposta de sucesso parecer falha — ver _item_ok().
-2. NF não localizada devolve HTTP 500 com um envelope de erro genérico
-   ({"success": false, "messages": [{"text": "Ocorreram erros ao processar essa
-   solicitacao."}]}), e não HTTP 200 com "NF:{nf} não localizada no ERP.".
-   Esse 500 é DETERMINÍSTICO (confirmado em 3 tentativas idênticas), então
-   retentá-lo é só latência — ver a discriminação em _post().
-3. O 401 devolve uma string JSON crua ("API Key inválida."), não um objeto.
-
-Consequência de (2): a API não distingue, para nós, "NF inexistente" de "erro
-interno" — ambos chegam como 500 + envelope genérico. Tratamos os dois como erro
-determinado (sem retry, WARNING, visível no e-mail de resumo à logística).
-
-RESSALVA DE IDEMPOTÊNCIA: reenviar a mesma NF é seguro (a API responde "Bd já
-criado para NF:X"), mas se um 5xx ocorrer entre criar a capa do BD (etapa 8 do
-fluxo da API) e inserir os itens (etapa 9), o retry cai em "Bd já criado" e os
-itens nunca entram — resulta num BD PENDENTE ANALISTA sem itens. A API atual não
-permite detectar isso; a janela é mínima e o analista percebe.
-
+O campo `serie` é obrigatório desde a versão da doc que o introduziu; omiti-lo
+devolve "O campo Serie é obrigatório.". A série vem do BigQuery
+(bq_client.buscar_serie_nf), pois o e-mail da transportadora não a informa.
 """
 
 import os
@@ -156,7 +141,7 @@ def _extrair(resp: requests.Response) -> tuple[list[str], bool] | None:
 
 
 @transient_retry
-def _post(nf: str, message: str, api_key: str) -> requests.Response:
+def _post(nf: str, serie: str, message: str, api_key: str) -> requests.Response:
     """POST cru. Levanta HTTPError — acionando o retry — SOMENTE em 5xx cujo corpo
     NÃO é um payload da WiseReturn.
 
@@ -166,14 +151,15 @@ def _post(nf: str, message: str, api_key: str) -> requests.Response:
        um 5xx voltaria como Response normal e não haveria retry algum. Já um
        raise_for_status() geral faria retry de 401 (config errada — inútil e 3x
        mais lento).
-    2. A API responde 500 + envelope de erro para NF não localizada, de forma
-       DETERMINÍSTICA (verificado). Retentar esse caso é puro desperdício de
-       latência. Um 5xx SEM envelope reconhecível (HTML do App Service em cold
-       start ou restart) é que é transitório e merece as 3 tentativas."""
+    2. Um 5xx que vem COM o envelope da aplicação é erro determinado — retentar
+       só gasta latência. Já um 5xx SEM envelope reconhecível (HTML do App
+       Service em cold start ou restart) é transitório e merece as 3 tentativas.
+       Hoje os erros de negócio chegam como 200, mas a discriminação fica: uma
+       versão anterior da API respondia 500 para NF não localizada."""
     url = os.environ.get("WISERETURN_API_URL", _DEFAULT_URL)
     resp = _session.post(
         url,
-        json={"nf": nf, "message": message},
+        json={"nf": nf, "serie": serie, "message": message},
         headers={"X-External-Key": api_key, "Content-Type": "application/json"},
         timeout=_TIMEOUT,
     )
@@ -200,7 +186,7 @@ def _classificar(mensagens: list[str], algum_ok: bool) -> WiseReturnResult:
     return WiseReturnResult(mensagens=mensagens)  # erro de negócio
 
 
-def criar_bd(nota_fiscal: str, message: str) -> WiseReturnResult:
+def criar_bd(nota_fiscal: str, serie: str, message: str) -> WiseReturnResult:
     """Cria o BD da NF na WiseReturn.
 
     NUNCA levanta exceção — sempre devolve um WiseReturnResult e faz o logging do
@@ -209,14 +195,19 @@ def criar_bd(nota_fiscal: str, message: str) -> WiseReturnResult:
         return WiseReturnResult(desabilitado=True)
     if not nota_fiscal:
         return WiseReturnResult(mensagens=["NF vazia — chamada não realizada"])
+    if not serie:
+        # A API responderia "O campo Serie é obrigatório."; poupa o round-trip.
+        return WiseReturnResult(mensagens=["série vazia — chamada não realizada"])
 
     api_key = os.environ["WISERETURN_API_KEY"].strip()
     try:
-        resp = _post(nota_fiscal, message, api_key)
+        resp = _post(nota_fiscal, serie, message, api_key)
     except requests.RequestException as e:
         # Timeout/conexão/5xx após os 3 retries. WARNING (não ERROR): o chamado
         # interno já está gravado e o BD pode ser recriado por reenvio idempotente.
-        logger.warning(f"WiseReturn indisponível — BD da NF {nota_fiscal} não criado: {e}")
+        logger.warning(
+            f"WiseReturn indisponível — BD da NF {nota_fiscal}/{serie} não criado: {e}"
+        )
         return WiseReturnResult(erro_rede=True, mensagens=[str(e)])
     except Exception:
         # Bug nosso. ERROR (dispara e-mail de alerta) com texto FIXO sem a NF, para
@@ -255,7 +246,7 @@ def criar_bd(nota_fiscal: str, message: str) -> WiseReturnResult:
     result = _classificar(mensagens, algum_ok)
 
     if result.criado:
-        logger.info(f"WiseReturn — NF {nota_fiscal}: BD {result.numero_bd} criado")
+        logger.info(f"WiseReturn — NF {nota_fiscal} série {serie}: BD {result.numero_bd} criado")
     elif result.ja_existia:
         logger.info(
             f"WiseReturn — NF {nota_fiscal}: BD {result.numero_bd} já existia (no-op)"
@@ -265,6 +256,6 @@ def criar_bd(nota_fiscal: str, message: str) -> WiseReturnResult:
         # de 20 NFs viraria 20 e-mails (o throttle não colapsa, a NF está no texto).
         # Esses casos aparecem agregados no e-mail de resumo à logística.
         logger.warning(
-            f"WiseReturn recusou a criação do BD da NF {nota_fiscal}: {result.resumo}"
+            f"WiseReturn recusou a criação do BD da NF {nota_fiscal}/{serie}: {result.resumo}"
         )
     return result

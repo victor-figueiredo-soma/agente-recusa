@@ -1,64 +1,60 @@
 # Agente de Recusa — Atacado
 
-Automação que monitora uma caixa de e-mail corporativa, identifica **notificações de não-entrega de transportadoras** (recusa, retenção fiscal ou extravio) usando IA e, para cada Nota Fiscal do Atacado afetada, abre um chamado — registrando em planilha e BigQuery, criando o **Boletim de Devolução (BD) na WiseReturn** e notificando a equipe de logística por e-mail, tudo sem intervenção manual.
+Automação que monitora uma caixa de e-mail corporativa, identifica **notificações de não-entrega de transportadoras** (recusa, retenção fiscal ou extravio) usando IA e, para cada Nota Fiscal do Atacado afetada, abre o chamado de ponta a ponta: registra na planilha e no BigQuery, cria o Boletim de Devolução na WiseReturn e avisa a equipe de logística.
 
 ---
 
-## Objetivo
+## O problema que resolve
 
-As transportadoras (Braspress, Movvi, Solução, Comboio, etc.) enviam diariamente comunicados informando que caixas de produtos — identificadas por Nota Fiscal — não puderam ser entregues a lojistas multimarca. Esses e-mails chegam em formatos variados (mensagens automáticas padronizadas ou texto livre redigido pelo operador) e precisavam ser lidos, classificados e registrados manualmente pela equipe de atacado.
+As transportadoras (Braspress, Movvi, Solução, Comboio, entre outras) enviam diariamente comunicados informando que caixas de produtos — identificadas por Nota Fiscal — não puderam ser entregues a lojistas multimarca. Esses e-mails chegam em formatos variados: mensagens automáticas padronizadas ou texto livre redigido pelo operador.
 
-Este agente automatiza esse fluxo de ponta a ponta:
-
-- **Escuta** a caixa de entrada em tempo real (webhook do Microsoft Graph).
-- **Classifica** cada e-mail com o Gemini, distinguindo recusa real de assuntos administrativos, entregas concluídas, volumes trocados, etc.
-- **Extrai** a(s) Nota(s) Fiscal(is), transportadora, motivo e sub-motivo padronizado.
-- **Valida** se a NF pertence ao Atacado (consulta ao BigQuery), descartando as de Varejo.
-- **Registra** o chamado na planilha do Google Sheets e na tabela de chamados do BigQuery, com deduplicação por NF e por thread.
-- **Abre o BD** na WiseReturn, que busca CNPJ, representante, transportadora e itens direto do ERP e cria o Boletim de Devolução com status `PENDENTE ANALISTA`.
-- **Notifica** a equipe de logística por e-mail (resposta na própria thread) resumindo os chamados criados e o desfecho de cada BD.
-- **Contabiliza** o custo de cada execução (Gemini + BigQuery + infraestrutura) para acompanhamento financeiro.
+Antes, alguém precisava ler cada e-mail, interpretar o motivo, conferir se a NF era do Atacado, registrar em planilha e abrir o Boletim de Devolução manualmente. O agente faz esse caminho inteiro sozinho.
 
 ---
 
-## Como funciona
+## Fluxo
 
 ```
-┌──────────────┐   1. novo e-mail    ┌────────────────────┐
-│  Caixa M365  │ ──────────────────► │  Microsoft Graph    │
-│ (monitorada) │                     │  (change notification)
-└──────────────┘                     └─────────┬──────────┘
-                                                │ 2. POST /graph-webhook
-                                                ▼
-                                     ┌────────────────────────┐
-                                     │   Agente (FastAPI)      │
-                                     │                         │
-   ┌─────────────────────────────────┤  a. filtros de entrada  │
-   │                                 │  b. idempotência (thread)│
-   │                                 │  c. análise Gemini       │
-   │                                 │  d. valida NF (BigQuery) │
-   │                                 └───────────┬─────────────┘
-   │                                             │
-   ▼ e. grava chamado                  ▼ f. abre BD      ▼ g. notifica
-┌────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐
-│  Sheets    │  │  BigQuery     │  │  WiseReturn   │  │ E-mail p/ logística │
-│ (chamados) │  │ (chamados +   │  │ (Boletim de   │  │ (reply na thread)   │
-│            │  │  custos)      │  │  Devolução)   │  └────────────────────┘
-└────────────┘  └──────────────┘  └──────────────┘
+┌──────────────┐  novo e-mail   ┌─────────────────────┐
+│  Caixa M365  │ ─────────────► │  Microsoft Graph    │
+│ (monitorada) │                │ change notification │
+└──────────────┘                └──────────┬──────────┘
+                                           │ POST /graph-webhook
+                                           ▼
+                            ┌──────────────────────────────┐
+                            │      Agente (FastAPI)        │
+                            │  1. filtros de entrada       │
+                            │  2. idempotência por thread  │
+                            │  3. análise com Gemini       │
+                            │  4. valida NF (BigQuery)     │
+                            └──────────────┬───────────────┘
+                                           │  por NF identificada
+            ┌──────────────┬───────────────┼───────────────┬──────────────────┐
+            ▼              ▼               ▼               ▼                  ▼
+     ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌──────────────┐ ┌──────────────────┐
+     │  Sheets    │ │  BigQuery   │ │ BigQuery   │ │  WiseReturn  │ │ E-mail p/         │
+     │ (chamados) │ │ (chamados)  │ │ (série NF) │ │ (cria o BD)  │ │ logística (reply) │
+     └────────────┘ └─────────────┘ └────────────┘ └──────────────┘ └──────────────────┘
 ```
 
-1. Um e-mail chega na caixa monitorada.
-2. O Microsoft Graph dispara uma *change notification* para `POST /graph-webhook`.
-3. O agente responde `202` imediatamente e processa a mensagem em segundo plano:
-   - **Filtros de entrada** — descarta e-mails do remetente ignorado e processa apenas os destinados ao endereço-alvo.
-   - **Idempotência** — cada thread é analisada uma única vez; reenvios e continuações da mesma conversa são pulados.
-   - **Análise com IA** — o Gemini classifica o e-mail (`is_recusa`, transportadora, NF, motivo, sub-motivo, status, confiança), considerando o histórico da thread quando disponível.
-   - **Validação de NF** — cada NF é conferida no BigQuery; NFs que não são do Atacado são descartadas.
-   - **Registro** — o chamado é gravado no Google Sheets e na tabela de chamados do BigQuery (deduplicação por NF).
-   - **Abertura do BD** — a NF é enviada à API da WiseReturn, que cria o Boletim de Devolução. É a **última** etapa de propósito: é o único efeito colateral externo ao time, então só acontece depois de o registro interno estar garantido. Uma falha aqui não interrompe o processamento da NF.
-   - **Notificação** — a equipe de logística recebe um e-mail-resumo respondendo à thread original, incluindo o número do BD (ou o motivo de não ter sido criado).
+1. **Recebimento** — o Graph dispara uma *change notification* para `POST /graph-webhook`. O agente responde `202` imediatamente e processa em segundo plano, para não estourar o timeout de ~3s do Graph.
+2. **Filtros de entrada** — descarta e-mails do remetente ignorado e processa apenas os endereçados (To ou Cc) ao endereço-alvo configurado.
+3. **Idempotência por thread** — cada conversa é analisada uma única vez; reenvios e continuações da mesma thread são pulados, evitando custo de IA e chamado duplicado.
+4. **Análise com IA** — o Gemini classifica o e-mail devolvendo `is_recusa`, transportadora, Nota(s) Fiscal(is), motivo livre, sub-motivo padronizado, status e confiança, considerando o histórico da thread quando disponível.
+5. **Validação da NF** — cada NF é conferida no BigQuery; NFs que não são do Atacado são descartadas.
+6. **Registro** — o chamado é gravado no Google Sheets e na tabela de chamados do BigQuery, com deduplicação por NF.
+7. **Boletim de Devolução** — a NF e sua série são enviadas à API da WiseReturn, que busca CNPJ, representante, transportadora e itens no ERP e cria o BD com status `PENDENTE ANALISTA`.
+8. **Notificação** — a logística recebe um e-mail-resumo respondendo à thread original, com as NFs registradas e o desfecho de cada BD.
 
-A cada execução, os custos de Gemini, BigQuery e infraestrutura (Railway) são registrados na tabela de custos.
+Cada execução registra os custos de Gemini (tokens), BigQuery (bytes processados) e infraestrutura na tabela de custos, em BRL.
+
+### Ordem das etapas 6 a 8
+
+A criação do BD é deliberadamente a **última** etapa. É o único efeito colateral visível fora do time — um analista passa a ter trabalho na fila. Fazê-la antes do registro interno arriscaria um BD sem rastro nosso caso a gravação falhasse. Nesta ordem, o pior caso é "registro interno existe, BD não", que é detectável no log e no e-mail, e corrigível com um único reenvio (a API deduplica por NF).
+
+### De onde vem a série da NF
+
+A API da WiseReturn exige o campo `serie`, e o e-mail da transportadora não o informa. A série é obtida no BigQuery, na coluna `SERIE_NF` da mesma tabela usada para validar a NF, por uma consulta dedicada em `bq_client.buscar_serie_nf`. Sem série não há como criar o BD: o restante do fluxo segue normalmente e o e-mail de resumo registra o motivo.
 
 ---
 
@@ -66,50 +62,53 @@ A cada execução, os custos de Gemini, BigQuery e infraestrutura (Railway) são
 
 | Módulo | Responsabilidade |
 | --- | --- |
-| [main.py](main.py) | App FastAPI: webhook do Graph, ciclo de vida da *subscription* (criação, renovação e watchdog de auto-recuperação) e orquestração do processamento. |
-| [agents/graph_client.py](agents/graph_client.py) | Integração com o Microsoft Graph: autenticação (MSAL), leitura de mensagens e threads, gestão de *subscriptions* e envio de respostas. |
-| [agents/email_analyzer.py](agents/email_analyzer.py) | Análise do e-mail com o Gemini — limpeza do HTML, prompt especializado por transportadora e parsing do resultado. |
-| [agents/sheet_writer.py](agents/sheet_writer.py) | Gravação dos chamados no Google Sheets, com verificação de reiteração (mesma/outra thread). |
-| [agents/bq_client.py](agents/bq_client.py) | BigQuery: validação de NF do Atacado, gravação de chamados (dedup por NF), idempotência por thread e registro de custos. |
-| [agents/wisereturn_client.py](agents/wisereturn_client.py) | API WiseReturn: criação do Boletim de Devolução a partir da NF, com classificação do desfecho (criado / já existente / erro de negócio / auth / rede). |
-| [models/schemas.py](models/schemas.py) | Modelos Pydantic e as regras de negócio (sub-motivos padronizados, normalização de status). |
-| [utils/](utils/) | Logger, cálculo de custos (`pricing.py`) e política de *retry* transitório (`retry.py`). |
+| [main.py](main.py) | App FastAPI: webhook do Graph, ciclo de vida da *subscription* (criação, renovação e watchdog) e orquestração do processamento. |
+| [agents/graph_client.py](agents/graph_client.py) | Microsoft Graph: autenticação (MSAL), leitura de mensagens e threads, gestão de *subscriptions* e envio de respostas. |
+| [agents/email_analyzer.py](agents/email_analyzer.py) | Análise com o Gemini — limpeza do HTML, prompt especializado por transportadora e parsing do resultado. |
+| [agents/sheet_writer.py](agents/sheet_writer.py) | Gravação dos chamados no Google Sheets, com detecção de reiteração (mesma ou outra thread). |
+| [agents/bq_client.py](agents/bq_client.py) | BigQuery: validação de NF do Atacado, busca da série, gravação de chamados, idempotência por thread e registro de custos. |
+| [agents/wisereturn_client.py](agents/wisereturn_client.py) | API WiseReturn: criação do BD e classificação do desfecho (criado, já existente, erro de negócio, autenticação ou rede). |
+| [models/schemas.py](models/schemas.py) | Modelos Pydantic e regras de negócio (sub-motivos padronizados, normalização de status). |
+| [utils/](utils/) | Logger com alerta por e-mail, cálculo de custos (`pricing.py`) e política de *retry* (`retry.py`). |
 
 ---
 
-## Estrutura do projeto
+## Estrutura
 
 ```
 agente-recusa/
-├── main.py                # entrypoint FastAPI + webhook + ciclo da subscription
-├── agents/                # integrações externas (Graph, Gemini, Sheets, BigQuery)
-├── models/                # schemas Pydantic e regras de negócio
-├── utils/                 # logger, pricing, retry
-├── tests/                 # testes
-├── requirements.txt
+├── main.py                 # entrypoint FastAPI + webhook + ciclo da subscription
+├── agents/                 # integrações externas (Graph, Gemini, Sheets, BigQuery, WiseReturn)
+├── models/                 # schemas Pydantic e regras de negócio
+├── utils/                  # logger, pricing, retry
+├── tests/                  # testes (pytest)
+├── requirements.txt        # dependências de runtime
+├── requirements-dev.txt    # + pytest, para rodar os testes
 ├── Dockerfile
-├── railway.toml           # config de deploy (Railway)
-└── .env.example           # modelo das variáveis de ambiente
+├── railway.toml            # config de deploy (healthcheck em /health)
+└── .env.example            # modelo das variáveis de ambiente
 ```
 
 ---
 
 ## Configuração
 
-Toda a configuração é feita por **variáveis de ambiente**, definidas no painel do **Railway** (Service → Variables). O arquivo [.env.example](.env.example) serve como referência das variáveis necessárias e do que cada uma representa (credenciais do Gemini, Google Sheets, BigQuery e Microsoft Graph, além dos parâmetros de custo).
+Toda a configuração vem de **variáveis de ambiente**, definidas no painel do **Railway** (Service → Variables). O [.env.example](.env.example) documenta todas elas.
 
-As variáveis que determinam **para onde a automação aponta** — as que você provavelmente vai ajustar a cada ambiente — são:
+As que determinam para onde a automação aponta:
 
 | Variável | O que define |
 | --- | --- |
-| `SPREADSHEET_ID` | ID da planilha do Google Sheets onde os chamados são registrados (parte da URL da planilha). |
-| `MAILBOX_USER_ID` | E-mail/ID da caixa monitorada — é nela que a *subscription* fica de prontidão aguardando novos e-mails para disparar o webhook. |
-| `WEBHOOK_BASE_URL` | URL pública do host do agente, usada para registrar a *subscription* no Graph. |
-| `NOTIFICATION_EMAIL` | E-mail que recebe o aviso após a criação do chamado (resposta na mesma thread). |
-| `MAILBOX_TARGET_EMAIL` | Só processa e-mails cujo campo "Para:" contenha este endereço. |
+| `MAILBOX_USER_ID` | Caixa monitorada — é nela que a *subscription* aguarda novos e-mails. |
+| `MAILBOX_TARGET_EMAIL` | Só processa e-mails cujo To/Cc contenha este endereço. |
 | `FILTER_IGNORE_FROM` | E-mails deste remetente são descartados sem avaliação. |
+| `WEBHOOK_BASE_URL` | URL pública **HTTPS** do agente, usada para registrar a *subscription*. Precisa incluir o esquema `https://`. |
+| `NOTIFICATION_EMAIL` | Recebe o resumo dos chamados (reply na thread original). |
+| `ALERT_EMAIL` | Recebe alerta automático a cada log de nível ERROR. |
+| `SPREADSHEET_ID` | Planilha do Google Sheets onde os chamados são registrados. |
+| `WISERETURN_API_KEY` | Chave do header `X-External-Key`. **Sem ela a criação de BD é desativada**, e o restante do fluxo segue normal. |
 
-> As demais variáveis (chaves de API, credenciais de *service account* e parâmetros de precificação) seguem documentadas em [.env.example](.env.example).
+Credenciais (`GEMINI_API_KEY`, `GOOGLE_CREDENTIALS_JSON`, `BQ_CREDENTIALS_JSON`, `AZURE_*`), parâmetros de precificação e `WISERETURN_API_URL` estão documentados no [.env.example](.env.example).
 
 ---
 
@@ -122,7 +121,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-O agente sobe na porta `8080`. Para que o Graph consiga registrar a *subscription* e entregar as notificações, `WEBHOOK_BASE_URL` precisa apontar para uma URL pública que alcance a aplicação (em desenvolvimento, use um túnel como o ngrok).
+O agente sobe na porta `8080` (ou em `$PORT`, se definida). Para o Graph registrar a *subscription* e entregar notificações, `WEBHOOK_BASE_URL` precisa apontar para uma URL pública que alcance a aplicação — em desenvolvimento, use um túnel como o ngrok.
 
 ### Docker
 
@@ -133,7 +132,14 @@ docker run -p 8080:8080 --env-file .env agente-recusa
 
 ### Deploy (Railway)
 
-O deploy usa o [Dockerfile](Dockerfile) e o [railway.toml](railway.toml), com *health check* em `/health`. Basta configurar as variáveis de ambiente no painel do Railway.
+Usa o [Dockerfile](Dockerfile) e o [railway.toml](railway.toml), com *health check* em `/health`. O Railway injeta `PORT` automaticamente — não defina essa variável manualmente.
+
+### Testes
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
 
 ---
 
@@ -141,18 +147,27 @@ O deploy usa o [Dockerfile](Dockerfile) e o [railway.toml](railway.toml), com *h
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
-| `GET` | `/health` | Health check; retorna o status, o ID da *subscription* ativa e se a integração WiseReturn está ligada (`"wisereturn": "on"｜"off"`). |
-| `GET` / `POST` | `/graph-webhook` | Endpoint do webhook: responde ao `validationToken` do Graph e recebe as *change notifications*. |
-| `POST` | `/subscriptions/renew` | Renovação manual da *subscription* (protegida por header `X-API-Key`). |
+| `GET` | `/health` | Status, ID da *subscription* ativa e se a integração WiseReturn está ligada. |
+| `GET` / `POST` | `/graph-webhook` | Responde ao `validationToken` do Graph e recebe as *change notifications*. |
+| `POST` | `/subscriptions/renew` | Renovação manual da *subscription* (header `X-API-Key`). |
+
+`/health` é o primeiro lugar a olhar quando algo parece errado:
+
+```json
+{"status": "ok", "subscription_id": "f6bdcab2-...", "wisereturn": "on"}
+```
+
+`subscription_id` nulo significa que o agente **não está recebendo e-mails**.
 
 ---
 
 ## Robustez e observabilidade
 
-- **Subscription auto-gerenciada** — criada no *startup*, renovada a cada 24h e monitorada por um *watchdog* horário que a recria caso tenha expirado ou sumido, sobrevivendo a *restarts* sem intervenção.
-- **Idempotência em dois níveis** — por thread (cada conversa é vista uma vez) e por NF (uma NF gera no máximo um chamado), evitando chamados e custos duplicados.
-- **Retry transitório** — chamadas a Gemini, Graph, Sheets e BigQuery reexecutam automaticamente em falhas temporárias (429/5xx/timeout) com *backoff* exponencial.
-- **Rastreio de custos** — cada execução registra o consumo de Gemini (tokens), BigQuery (bytes processados) e infraestrutura na tabela de custos, em BRL.
-- **WiseReturn desacoplada** — a criação do BD é a última etapa e nunca aborta o processamento da NF: sem `WISERETURN_API_KEY` a integração é um *no-op* silencioso (visível em `/health`), e falhas viram `WARNING` + uma linha no e-mail de resumo. Só erro de autenticação dispara alerta, porque afeta todas as NFs.
-- **Reenvio seguro** — a chamada acontece também em reiteração: a API deduplica por NF (`"Bd já criado para NF:X"`), o que auto-cura uma NF cujo BD falhou na primeira tentativa. **Ressalva:** se a API falhar entre criar a capa do BD e inserir os itens, o reenvio cai em "Bd já criado" e os itens não entram — resulta num BD sem itens, que a API atual não permite detectar.
-```
+- **Subscription auto-gerenciada** — criada no *startup*, renovada a cada 24h e monitorada por um *watchdog* horário que a recria caso tenha expirado ou sumido. Sobrevive a restarts sem intervenção.
+- **Idempotência em dois níveis** — por thread (cada conversa é vista uma vez) e por NF (uma NF gera no máximo um chamado), evitando chamados e custos duplicados. A criação do BD também é idempotente: a WiseReturn deduplica por NF e devolve o número do BD já existente.
+- **Retry transitório** — chamadas a Gemini, Graph, Sheets, BigQuery e WiseReturn reexecutam automaticamente em falhas temporárias (429, 5xx, timeout) com *backoff* exponencial. Erros determinísticos de negócio não são retentados.
+- **Falhas isoladas** — um problema na criação do BD nunca interrompe o processamento da NF: o chamado já está gravado, e o desfecho aparece no log e no e-mail de resumo.
+- **Alerta por e-mail** — qualquer log de nível ERROR dispara e-mail para `ALERT_EMAIL`, com *throttle* para evitar repetição. Falhas que afetam apenas uma NF ficam em WARNING e são reportadas de forma agregada no resumo à logística.
+- **Rastreio de custos** — cada execução registra o consumo de Gemini (tokens), BigQuery (bytes) e infraestrutura na tabela de custos, em BRL.
+
+> **Atenção:** nunca rode duas instâncias do agente em paralelo apontando para caixas diferentes com o mesmo App Registration do Azure. Elas removem a *subscription* uma da outra e o agente para de receber e-mails silenciosamente.

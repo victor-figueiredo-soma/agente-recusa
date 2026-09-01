@@ -77,6 +77,62 @@ def is_nf_atacado(nota_fiscal: str, thread_id: str | None = None) -> bool:
 
 
 @transient_retry
+def _run_serie_query(nota_fiscal: str, client: bigquery.Client) -> tuple[list[str], int]:
+    # LIMIT 2 (não 1) para detectar o caso teórico de NF com múltiplas séries sem
+    # custo extra — a doc da WiseReturn alerta que uma mesma NF pode existir em
+    # séries diferentes, embora não haja nenhum caso real na base (161.281 NFs
+    # faturadas em 2026, todas com uma única série).
+    query = """
+        SELECT DISTINCT SERIE_NF
+        FROM `soma-dl-refined-online.atacado_processed.info_fat_nf`
+        WHERE NF_SAIDA = @nota_fiscal AND SERIE_NF IS NOT NULL
+        LIMIT 2
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("nota_fiscal", "STRING", nota_fiscal)
+        ]
+    )
+    job = client.query(query, job_config=job_config)
+    rows = list(job.result(timeout=_BQ_TIMEOUT_SECONDS))
+    return [row["SERIE_NF"] for row in rows], job.total_bytes_billed or 0
+
+
+def buscar_serie_nf(nota_fiscal: str, thread_id: str | None = None) -> str | None:
+    """Série da NF, exigida pelo campo `serie` da API WiseReturn.
+
+    Usa uma query PRÓPRIA, deliberadamente separada de is_nf_atacado. Aproveitar
+    a query da validação economizaria uma consulta (~R$ 0,0023 por NF), mas
+    alteraria o gate do fluxo antigo: uma NF que existe com SERIE_NF nulo
+    passaria a não ser encontrada e seria descartada como Varejo. Não vale.
+
+    Devolve None quando a NF não tem série na origem — nesse caso o BD não é
+    criado e o restante do fluxo segue inalterado."""
+    client = _get_client()
+    series, bytes_billed = _run_serie_query(nota_fiscal, client)
+
+    try:
+        from utils import pricing
+        event = pricing.bq_cost_brl(bytes_billed)
+        insert_usage_event(origem="bigquery", thread_id=thread_id, **event)
+    except Exception as e:
+        logger.warning(f"Falha ao registrar uso BQ: {e}")
+
+    if not series:
+        logger.warning(f"BigQuery — NF {nota_fiscal}: sem série cadastrada")
+        return None
+    if len(series) > 1:
+        # Caso teórico previsto pela doc da WiseReturn. Segue com a primeira, mas
+        # registra para investigação — o BD pode nascer na série errada.
+        logger.warning(
+            f"BigQuery — NF {nota_fiscal}: múltiplas séries {series} — usando {series[0]}"
+        )
+
+    logger.info(f"BigQuery — NF {nota_fiscal}: série {series[0]}")
+    return series[0]
+
+
+@transient_retry
 def insert_chamado_if_absent(
     status: str,
     sub_motivo: str | None,

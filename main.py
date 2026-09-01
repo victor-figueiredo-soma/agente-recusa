@@ -396,18 +396,34 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
         # tentativa — mesma doutrina do insert_chamado_if_absent acima.
         # Falha aqui NUNCA aborta a NF: criar_bd não levanta exceção e o chamado
         # interno já está gravado.
-        bd = wisereturn_client.criar_bd(
-            nota_fiscal=nf,
-            message=wisereturn_client.montar_message(
-                nota_fiscal=nf,
-                status=analysis.status or "RECUSA",
-                motivo_recusa=analysis.motivo_recusa,
-                sub_motivo=analysis.sub_motivo,
-                transportadora=analysis.transportadora,
-            ),
-        )
-        if not bd.desabilitado:
-            bds_por_nf[nf_label] = bd.resumo if bd.ok else f"NÃO criado — {bd.resumo}"
+        # A série é obrigatória na API e o e-mail da transportadora não a informa,
+        # então vem do BigQuery. A busca fica DENTRO do guard de habilitado() por
+        # dois motivos: com a integração desligada não se gasta a query, e uma
+        # falha ao obter a série fica confinada aqui — não alcança Sheets nem BQ.
+        if wisereturn_client.habilitado():
+            serie_nf: str | None = None
+            try:
+                serie_nf = bq_client.buscar_serie_nf(nf, thread_id=payload.conversationId)
+            except Exception as e:
+                logger.warning(
+                    f"Não foi possível obter a série da NF {nf}: {e} — BD não criado"
+                )
+
+            if serie_nf:
+                bd = wisereturn_client.criar_bd(
+                    nota_fiscal=nf,
+                    serie=serie_nf,
+                    message=wisereturn_client.montar_message(
+                        nota_fiscal=nf,
+                        status=analysis.status or "RECUSA",
+                        motivo_recusa=analysis.motivo_recusa,
+                        sub_motivo=analysis.sub_motivo,
+                        transportadora=analysis.transportadora,
+                    ),
+                )
+                bds_por_nf[nf_label] = bd.resumo if bd.ok else f"NÃO criado — {bd.resumo}"
+            else:
+                bds_por_nf[nf_label] = "NÃO criado — série da NF indisponível"
 
         # Categorização da notificação à logística (separada da gravação no BQ).
         if tipo_interacao == "primeira":
