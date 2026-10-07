@@ -65,9 +65,17 @@ class AnalysisResult(BaseModel):
     @field_validator("nota_fiscal")
     @classmethod
     def validate_nota_fiscal(cls, v: Optional[str]) -> Optional[str]:
+        """Mantém só tokens de NF válidos: 7 dígitos, opcionalmente seguidos de
+        "/SÉRIE". A série é preservada porque a numeração de NF se repete entre
+        séries (emissores) diferentes — sem ela, uma NF da série 4 de outro
+        emissor casava com uma NF antiga de mesmo número da série 72."""
         if v is None:
             return None
-        valid = [nf.strip() for nf in v.split(",") if re.fullmatch(r"\d{7}", nf.strip())]
+        valid = []
+        for tok in v.split(","):
+            tok = re.sub(r"\s*/\s*", "/", tok.strip())
+            if re.fullmatch(r"\d{7}(/\d{1,4})?", tok):
+                valid.append(tok)
         return ", ".join(valid) if valid else None
 
     @field_validator("status")
@@ -175,6 +183,31 @@ class WiseReturnResult(BaseModel):
         if self.erro_rede:
             return "WiseReturn indisponível"
         return "; ".join(m for m in self.mensagens if m)[:300] or "erro desconhecido"
+
+
+def separar_nf_serie(token: str) -> tuple[str, Optional[str]]:
+    """Separa um token de NF validado ("1122836/4" ou "1122836") em (número, série).
+
+    A série vem sem zeros à esquerda ("04" → "4"), para casar com o faturamento,
+    que grava "72", "10" e afins."""
+    numero, _, serie = token.strip().partition("/")
+    serie = serie.strip()
+    if serie:
+        serie = serie.lstrip("0") or "0"
+    return numero.strip(), serie or None
+
+
+class ValidacaoNF(BaseModel):
+    """Resultado da conferência de uma NF no faturamento do Atacado.
+
+    `atacado=False` cobre tanto "não encontrada" quanto "encontrada, mas
+    descartada" (série diferente, ou só casa com NF antiga demais) — `motivo`
+    diz qual, para o log."""
+    atacado: bool
+    serie: Optional[str] = None  # série do documento casado (a do e-mail, ou a mais recente)
+    emitida: Optional[str] = None  # data de faturamento, ISO
+    idade_dias: Optional[int] = None
+    motivo: Optional[str] = None
 
 
 # --- Microsoft Graph Change Notification schemas ---

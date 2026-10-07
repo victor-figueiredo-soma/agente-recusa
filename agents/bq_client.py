@@ -1,9 +1,10 @@
 import os
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from google.cloud import bigquery
 from google.oauth2.service_account import Credentials
+from models.schemas import ValidacaoNF
 from utils.logger import get_logger
 from utils.retry import transient_retry
 
@@ -76,40 +77,63 @@ def is_nf_atacado(nota_fiscal: str, thread_id: str | None = None) -> bool:
     return found
 
 
+# Recusa legítima chega em dias ou semanas (88% dos chamados com NF de até 30 dias).
+# Sem a série no e-mail, um número que só casa com NF muito antiga é colisão de
+# numeração com outro emissor — não a NF que a transportadora está comunicando.
+_IDADE_MAX_SEM_SERIE_DIAS = 180
+
+
 @transient_retry
-def _run_serie_query(nota_fiscal: str, client: bigquery.Client) -> tuple[list[str], int]:
-    # LIMIT 2 (não 1) para detectar o caso teórico de NF com múltiplas séries sem
-    # custo extra — a doc da WiseReturn alerta que uma mesma NF pode existir em
-    # séries diferentes, embora não haja nenhum caso real na base (161.281 NFs
-    # faturadas em 2026, todas com uma única série).
+def _run_validacao_query(
+    nota_fiscal: str, serie: str | None, client: bigquery.Client
+) -> tuple[dict | None, int]:
+    # Com série: confere o PAR (NF, série). Sem série: devolve a ocorrência mais
+    # recente do número, em qualquer série — e a idade dela decide se é colisão.
+    # SAFE_CAST nos dois lados para "04" e "4" casarem.
     query = """
-        SELECT DISTINCT SERIE_NF
+        SELECT SERIE_NF, MAX(DATA_FATURAMENTO) AS emitida
         FROM `soma-dl-refined-online.atacado_processed.info_fat_nf`
-        WHERE NF_SAIDA = @nota_fiscal AND SERIE_NF IS NOT NULL
-        LIMIT 2
+        WHERE NF_SAIDA = @nota_fiscal
+          AND (@serie IS NULL OR SAFE_CAST(SERIE_NF AS INT64) = @serie)
+        GROUP BY SERIE_NF
+        ORDER BY emitida DESC
+        LIMIT 1
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("nota_fiscal", "STRING", nota_fiscal)
+            bigquery.ScalarQueryParameter("nota_fiscal", "STRING", nota_fiscal),
+            bigquery.ScalarQueryParameter(
+                "serie", "INT64", int(serie) if serie else None
+            ),
         ]
     )
     job = client.query(query, job_config=job_config)
     rows = list(job.result(timeout=_BQ_TIMEOUT_SECONDS))
-    return [row["SERIE_NF"] for row in rows], job.total_bytes_billed or 0
+    return (dict(rows[0]) if rows else None), job.total_bytes_billed or 0
 
 
-def buscar_serie_nf(nota_fiscal: str, thread_id: str | None = None) -> str | None:
-    """Série da NF, exigida pelo campo `serie` da API WiseReturn.
+def validar_nf_atacado(
+    nota_fiscal: str,
+    serie: str | None = None,
+    thread_id: str | None = None,
+    hoje: date | None = None,
+) -> ValidacaoNF:
+    """Confere se a NF que a transportadora comunicou é uma NF do Atacado.
 
-    Usa uma query PRÓPRIA, deliberadamente separada de is_nf_atacado. Aproveitar
-    a query da validação economizaria uma consulta (~R$ 0,0023 por NF), mas
-    alteraria o gate do fluxo antigo: uma NF que existe com SERIE_NF nulo
-    passaria a não ser encontrada e seria descartada como Varejo. Não vale.
+    Uma NF só é única pelo par (número, série): a mesma numeração se repete em
+    séries de emissores diferentes. Em 28/09/2026 a caixa passou a receber
+    comunicados de NFs série 4 da AZZAS 2154, cujos números colidem com NFs série
+    72 de 2025 — e a validação só por número abriu chamados e BDs para essas notas
+    antigas, de outros clientes.
 
-    Devolve None quando a NF não tem série na origem — nesse caso o BD não é
-    criado e o restante do fluxo segue inalterado."""
+    - Com `serie` (o e-mail informou): exige o par exato no faturamento.
+    - Sem `serie`: aceita o número em qualquer série, mas descarta quando a única
+      ocorrência é mais antiga que _IDADE_MAX_SEM_SERIE_DIAS — colisão provável.
+
+    A série devolvida é a do documento casado: a do e-mail, ou a mais recente.
+    É ela que vai para a WiseReturn, que exige o campo."""
     client = _get_client()
-    series, bytes_billed = _run_serie_query(nota_fiscal, client)
+    row, bytes_billed = _run_validacao_query(nota_fiscal, serie, client)
 
     try:
         from utils import pricing
@@ -118,18 +142,37 @@ def buscar_serie_nf(nota_fiscal: str, thread_id: str | None = None) -> str | Non
     except Exception as e:
         logger.warning(f"Falha ao registrar uso BQ: {e}")
 
-    if not series:
-        logger.warning(f"BigQuery — NF {nota_fiscal}: sem série cadastrada")
-        return None
-    if len(series) > 1:
-        # Caso teórico previsto pela doc da WiseReturn. Segue com a primeira, mas
-        # registra para investigação — o BD pode nascer na série errada.
-        logger.warning(
-            f"BigQuery — NF {nota_fiscal}: múltiplas séries {series} — usando {series[0]}"
+    alvo = f"{nota_fiscal}/{serie}" if serie else nota_fiscal
+    if row is None:
+        motivo = (
+            f"série {serie} não pertence ao faturamento do Atacado"
+            if serie else "não encontrada no faturamento do Atacado"
         )
+        logger.info(f"BigQuery — NF {alvo}: {motivo} — ignorada")
+        return ValidacaoNF(atacado=False, motivo=motivo)
 
-    logger.info(f"BigQuery — NF {nota_fiscal}: série {series[0]}")
-    return series[0]
+    emitida = row["emitida"].date()
+    idade = ((hoje or date.today()) - emitida).days
+    resultado = ValidacaoNF(
+        atacado=True,
+        serie=str(row["SERIE_NF"]),
+        emitida=emitida.isoformat(),
+        idade_dias=idade,
+    )
+
+    if serie is None and idade > _IDADE_MAX_SEM_SERIE_DIAS:
+        motivo = (
+            f"só casa com NF série {resultado.serie} emitida há {idade} dias — "
+            f"provável colisão de numeração com outro emissor"
+        )
+        # WARNING, não ERROR: é dado por NF e não deve disparar alerta por e-mail.
+        logger.warning(f"BigQuery — NF {nota_fiscal}: {motivo} — ignorada")
+        return resultado.model_copy(update={"atacado": False, "motivo": motivo})
+
+    logger.info(
+        f"BigQuery — NF {alvo}: Atacado (série {resultado.serie}, emitida {resultado.emitida})"
+    )
+    return resultado
 
 
 @transient_retry

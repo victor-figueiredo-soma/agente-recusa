@@ -12,8 +12,9 @@ DIVERGÊNCIA DA DOCUMENTAÇÃO, verificada contra a API real: o campo de sucesso
 faria toda resposta de sucesso parecer falha — ver _item_ok().
 
 O campo `serie` é obrigatório desde a versão da doc que o introduziu; omiti-lo
-devolve "O campo Serie é obrigatório.". A série vem do BigQuery
-(bq_client.buscar_serie_nf), pois o e-mail da transportadora não a informa.
+devolve "O campo Serie é obrigatório.". Ela precisa ser a série do documento
+certo: a NF só é única pelo par (número, série). Vem da validação da NF
+(bq_client.validar_nf_atacado) — a do e-mail quando a transportadora a informa.
 """
 
 import os

@@ -41,7 +41,7 @@ Antes, alguém precisava ler cada e-mail, interpretar o motivo, conferir se a NF
 2. **Filtros de entrada** — descarta e-mails do remetente ignorado e processa apenas os endereçados (To ou Cc) ao endereço-alvo configurado.
 3. **Idempotência por thread** — cada conversa é analisada uma única vez; reenvios e continuações da mesma thread são pulados, evitando custo de IA e chamado duplicado.
 4. **Análise com IA** — o Gemini classifica o e-mail devolvendo `is_recusa`, transportadora, Nota(s) Fiscal(is), motivo livre, sub-motivo padronizado, status e confiança, considerando o histórico da thread quando disponível.
-5. **Validação da NF** — cada NF é conferida no BigQuery; NFs que não são do Atacado são descartadas.
+5. **Validação da NF** — cada NF é conferida no faturamento do Atacado (BigQuery) pelo par número e série; NFs de outros emissores são descartadas.
 6. **Registro** — o chamado é gravado no Google Sheets e na tabela de chamados do BigQuery, com deduplicação por NF.
 7. **Boletim de Devolução** — a NF e sua série são enviadas à API da WiseReturn, que busca CNPJ, representante, transportadora e itens no ERP e cria o BD com status `PENDENTE ANALISTA`.
 8. **Notificação** — a logística recebe um e-mail-resumo respondendo à thread original, com as NFs registradas e o desfecho de cada BD.
@@ -52,9 +52,14 @@ Cada execução registra os custos de Gemini (tokens), BigQuery (bytes processad
 
 A criação do BD é deliberadamente a **última** etapa. É o único efeito colateral visível fora do time — um analista passa a ter trabalho na fila. Fazê-la antes do registro interno arriscaria um BD sem rastro nosso caso a gravação falhasse. Nesta ordem, o pior caso é "registro interno existe, BD não", que é detectável no log e no e-mail, e corrigível com um único reenvio (a API deduplica por NF).
 
-### De onde vem a série da NF
+### Número e série da NF
 
-A API da WiseReturn exige o campo `serie`, e o e-mail da transportadora não o informa. A série é obtida no BigQuery, na coluna `SERIE_NF` da mesma tabela usada para validar a NF, por uma consulta dedicada em `bq_client.buscar_serie_nf`. Sem série não há como criar o BD: o restante do fluxo segue normalmente e o e-mail de resumo registra o motivo.
+Uma NF só é identificada pelo par **número e série**: a mesma numeração se repete em séries de emissores diferentes do grupo. Por isso o agente nunca valida uma NF só pelo número.
+
+- **Quando o e-mail traz a série** — a Braspress informa `1528101/72` — o par exato precisa existir no faturamento do Atacado. Uma NF de outro emissor com o mesmo número é descartada.
+- **Quando o e-mail não traz a série**, o número é aceito em qualquer série, desde que a nota tenha sido emitida há no máximo **180 dias**. Um número que só casa com uma nota mais antiga é tratado como colisão de numeração e descartado.
+
+A série do documento validado é a que vai para a WiseReturn, que exige o campo. A validação acontece em `bq_client.validar_nf_atacado`, numa única consulta. Se o BigQuery estiver indisponível, o chamado é registrado normalmente, mas o BD não é criado — sem validação não há como garantir que é a nota certa —, e o e-mail de resumo informa o motivo.
 
 ---
 
@@ -66,7 +71,7 @@ A API da WiseReturn exige o campo `serie`, e o e-mail da transportadora não o i
 | [agents/graph_client.py](agents/graph_client.py) | Microsoft Graph: autenticação (MSAL), leitura de mensagens e threads, gestão de *subscriptions* e envio de respostas. |
 | [agents/email_analyzer.py](agents/email_analyzer.py) | Análise com o Gemini — limpeza do HTML, prompt especializado por transportadora e parsing do resultado. |
 | [agents/sheet_writer.py](agents/sheet_writer.py) | Gravação dos chamados no Google Sheets, com detecção de reiteração (mesma ou outra thread). |
-| [agents/bq_client.py](agents/bq_client.py) | BigQuery: validação de NF do Atacado, busca da série, gravação de chamados, idempotência por thread e registro de custos. |
+| [agents/bq_client.py](agents/bq_client.py) | BigQuery: validação da NF por número e série, gravação de chamados, idempotência por thread e registro de custos. |
 | [agents/wisereturn_client.py](agents/wisereturn_client.py) | API WiseReturn: criação do BD e classificação do desfecho (criado, já existente, erro de negócio, autenticação ou rede). |
 | [models/schemas.py](models/schemas.py) | Modelos Pydantic e regras de negócio (sub-motivos padronizados, normalização de status). |
 | [utils/](utils/) | Logger com alerta por e-mail, cálculo de custos (`pricing.py`) e política de *retry* (`retry.py`). |

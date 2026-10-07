@@ -95,7 +95,8 @@ Estrutura característica:
   para transporte, através da(s) Notas(s) Fiscal(is): [NF], acobertada(s) pelo conhecimento
   Numero(AWB) : [AWB] emitido em [DATA] ([FILIAL]), destinatário [DESTINATÁRIO],
   encontra(m)-se pendente(s), motivado(s) pela seguinte ocorrência : [CÓDIGO-DESCRIÇÃO]"
-- NF: logo após "Notas(s) Fiscal(is):" — pode conter barra (ex: "1528101/72")
+- NF: logo após "Notas(s) Fiscal(is):", no formato NÚMERO/SÉRIE (ex: "1528101/72") — a série
+  depois da barra identifica o emissor da nota e deve ser preservada
 - Ocorrência: código numérico seguido de descrição (ex: "311-PEDIDO CANCELADO")
 - Contato: domínio @braspress.com.br
 - Alerta: sempre menciona devolução automática e cobrança de frete (50% rodoviário, 30% rodoaéreo)
@@ -201,14 +202,21 @@ PASSO 3 — Analisar o corpo do email
     errados enviados ao destinatário) → is_recusa = false
 
 PASSO 4 — Extrair a Nota Fiscal (obrigatório para is_recusa = true)
-  - Braspress: localizar "Notas(s) Fiscal(is):" e extrair os 7 dígitos antes da barra;
-    "/72" e similares são sub-série e devem ser descartados (ex: "1528101/72" → "1528101")
-  - Movvi: localizar "NF " na frase-chave e extrair os 7 dígitos do número da NF
+  - Braspress: localizar "Notas(s) Fiscal(is):" e extrair cada NF no formato NÚMERO/SÉRIE,
+    PRESERVANDO a série que vem depois da barra (ex: "1528101/72" → "1528101/72";
+    "1122836/4" → "1122836/4"). A série NÃO é descartável: a mesma numeração de NF se
+    repete em séries diferentes, de emissores diferentes, e só o par número/série
+    identifica o documento.
+  - Movvi: localizar "NF " na frase-chave e extrair os 7 dígitos do número da NF; se vier no
+    formato NÚMERO/SÉRIE, preservar a série da mesma forma
   - Solução / Comboio: buscar "NF", "NFs" ou "Nota Fiscal" seguido de número de 7 dígitos
     no corpo; NÃO usar números do assunto que não tenham essa identificação explícita
-  - Se houver múltiplas NFs, retornar todas separadas por vírgula (ex: "1528101, 1527451")
-  - A NF deve ter exatamente 7 dígitos. Números com menos ou mais de 7 dígitos NÃO são NF
-    e devem ser ignorados (ex: "123456" ou "12345678" → ignorar)
+  - Se houver múltiplas NFs, retornar todas separadas por vírgula, cada uma com sua série
+    quando informada (ex: "1528101/72, 1527451/72")
+  - O NÚMERO da NF deve ter exatamente 7 dígitos (a série não entra nessa contagem). Números
+    com menos ou mais de 7 dígitos NÃO são NF e devem ser ignorados (ex: "123456" ou
+    "12345678" → ignorar)
+  - Nunca invente a série: se o e-mail não a informar, retorne apenas os 7 dígitos
   - Se nenhuma NF for identificada → nota_fiscal = null → is_recusa = false (regra absoluta)
 
 PASSO 5 — Extrair o motivo da recusa (descrição livre)
@@ -284,7 +292,7 @@ Responda SOMENTE com um objeto JSON válido, sem texto adicional, seguindo exata
 {
   "is_recusa": <true se for notificação de não-entrega ou retenção fiscal, false caso contrário>,
   "transportadora": "<nome normalizado da transportadora, ou null se não identificado>",
-  "nota_fiscal": "<7 primeiros dígitos da(s) NF(s), separados por vírgula se houver mais de uma, ou null se não identificado>",
+  "nota_fiscal": "<NF(s) no formato 'NÚMERO/SÉRIE' quando a série for informada, ou apenas os 7 dígitos quando não for; separadas por vírgula se houver mais de uma; null se não identificado>",
   "motivo_recusa": "<motivo da não-entrega em linguagem clara e objetiva, ou null se não for recusa>",
   "sub_motivo": "<UMA das categorias padronizadas em CAIXA ALTA (PASSO 5B), ou null se is_recusa = false>",
   "confianca": "<'alta', 'media' ou 'baixa' — sua confiança na classificação>",

@@ -8,7 +8,9 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from models.schemas import EmailPayload, ProcessedEmail, GraphNotificationPayload
+from models.schemas import (
+    EmailPayload, ProcessedEmail, GraphNotificationPayload, ValidacaoNF, separar_nf_serie,
+)
 from agents.email_analyzer import analyze_email
 from agents.sheet_writer import write_to_sheet
 from agents import graph_client, bq_client, wisereturn_client
@@ -320,19 +322,27 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
 
     remetente = f"{payload.fromName} <{payload.from_email}>" if payload.fromName else payload.from_email
 
+    # Cada token pode trazer a série ("1122836/4"). Ela decide a validação e vai para
+    # a WiseReturn; Sheets e BigQuery continuam gravando só o número da NF.
     nfs_raw = analysis.nota_fiscal
-    nfs = [nf.strip() for nf in nfs_raw.split(",") if nf.strip()]
+    itens_nf = [separar_nf_serie(t) for t in nfs_raw.split(",") if t.strip()]
 
     novos_chamados: list[str] = []
     ja_registradas: list[str] = []
     # NF (label) -> desfecho do BD na WiseReturn, só para o e-mail de resumo.
     bds_por_nf: dict[str, str] = {}
 
-    for nf in nfs:
+    for nf, serie_email in itens_nf:
+        # A validação confere o PAR (NF, série) quando o e-mail traz a série — só o
+        # número colide entre emissores e já abriu chamado para NF antiga de outro
+        # cliente. O motivo do descarte é logado dentro de validar_nf_atacado.
+        validacao: ValidacaoNF | None = None
         if nf:
             try:
-                if not bq_client.is_nf_atacado(nf, thread_id=payload.conversationId):
-                    logger.info(f"NF {nf} não é do Atacado — ignorada")
+                validacao = bq_client.validar_nf_atacado(
+                    nf, serie=serie_email, thread_id=payload.conversationId
+                )
+                if not validacao.atacado:
                     continue
             except Exception as e:
                 logger.error(f"Erro ao validar NF {nf} no BigQuery: {e} — processando mesmo assim")
@@ -396,18 +406,12 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
         # tentativa — mesma doutrina do insert_chamado_if_absent acima.
         # Falha aqui NUNCA aborta a NF: criar_bd não levanta exceção e o chamado
         # interno já está gravado.
-        # A série é obrigatória na API e o e-mail da transportadora não a informa,
-        # então vem do BigQuery. A busca fica DENTRO do guard de habilitado() por
-        # dois motivos: com a integração desligada não se gasta a query, e uma
-        # falha ao obter a série fica confinada aqui — não alcança Sheets nem BQ.
+        # A série é a do documento que a validação casou: a do e-mail ou, sem ela,
+        # a da ocorrência mais recente no faturamento. Se a validação não concluiu
+        # (BigQuery fora do ar), não há série confiável — e abrir BD para a NF
+        # errada é pior que não abrir: o chamado segue registrado e o e-mail avisa.
         if wisereturn_client.habilitado():
-            serie_nf: str | None = None
-            try:
-                serie_nf = bq_client.buscar_serie_nf(nf, thread_id=payload.conversationId)
-            except Exception as e:
-                logger.warning(
-                    f"Não foi possível obter a série da NF {nf}: {e} — BD não criado"
-                )
+            serie_nf = validacao.serie if validacao else None
 
             if serie_nf:
                 bd = wisereturn_client.criar_bd(
@@ -423,7 +427,7 @@ def _process_message_inner(message_id: str, ctx: dict | None = None) -> None:
                 )
                 bds_por_nf[nf_label] = bd.resumo if bd.ok else f"NÃO criado — {bd.resumo}"
             else:
-                bds_por_nf[nf_label] = "NÃO criado — série da NF indisponível"
+                bds_por_nf[nf_label] = "NÃO criado — validação da NF indisponível"
 
         # Categorização da notificação à logística (separada da gravação no BQ).
         if tipo_interacao == "primeira":
